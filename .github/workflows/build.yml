@@ -20,10 +20,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # Pakai Android SDK bawaan runner (setup-android@v3 gagal karena
+      # paket 'tools' sudah tidak ada di repositori Google).
       - name: Build debug APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: ./gradlew assembleDebug
 
       - name: Upload APK
