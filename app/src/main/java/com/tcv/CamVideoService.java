@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
@@ -47,6 +48,8 @@ public class CamVideoService extends Service {
     private static HandlerThread backgroundThread;
 
     private static boolean isRecording = false;
+    private static boolean isAttemptInFlight = false;
+    private static long sessionGen = 0;
     private static File file;
     private static long recordStartMs = 0;
     private static int openRetryCount = 0;
@@ -82,6 +85,8 @@ public class CamVideoService extends Service {
                 stopSelfIfIdle();
                 break;
             case "quit":
+                sessionGen++; // batalkan retry yang mungkin terjadwal
+                isAttemptInFlight = false;
                 String msg = isRecording && file != null
                         ? "Recording finished: " + file.getAbsolutePath()
                         : "No recording to stop";
@@ -119,8 +124,8 @@ public class CamVideoService extends Service {
     }
 
     private void handleRecord(final Context context, final Intent intent) {
-        if (isRecording) {
-            StatusFile.write("", "Recording already in progress!");
+        if (isRecording || isAttemptInFlight) {
+            StatusFile.write("", "Sibuk: sudah ada rekaman/percobaan berjalan. Tunggu atau kirim quit dulu.");
             return;
         }
 
@@ -144,64 +149,80 @@ public class CamVideoService extends Service {
 
         file = outFile;
         openRetryCount = 0;
-        attemptOpenCamera(context, intent, cameraId, outFile, durationMs, recordAudio, bitrate, fps);
+        sessionGen++;
+        final long myGen = sessionGen;
+        isAttemptInFlight = true;
+        attemptOpenCamera(context, intent, cameraId, outFile, durationMs, recordAudio, bitrate, fps, myGen);
+    }
+
+    /** Handler yang selalu valid: bikin ulang thread kalau sudah mati. */
+    private static synchronized Handler bgHandler() {
+        if (backgroundThread == null) {
+            backgroundThread = new HandlerThread("TCVBackground");
+            backgroundThread.start();
+        }
+        return new Handler(backgroundThread.getLooper());
     }
 
     private void attemptOpenCamera(final Context context, final Intent intent,
                                    final String cameraId, final File outFile,
                                    final int durationMs, final boolean recordAudio,
-                                   final int bitrate, final int fps) {
+                                   final int bitrate, final int fps, final long myGen) {
+        if (myGen != sessionGen) return; // basi: sudah ada perintah baru
         try {
             final CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
-
-            if (backgroundThread == null) {
-                backgroundThread = new HandlerThread("TCVBackground");
-                backgroundThread.start();
-            }
-            final Handler bgHandler = new Handler(backgroundThread.getLooper());
 
             //noinspection MissingPermission
             manager.openCamera(cameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice camera) {
+                    if (myGen != sessionGen) {
+                        try { camera.close(); } catch (RuntimeException ignored) {}
+                        return;
+                    }
                     cameraDevice = camera;
                     try {
                         final CameraCharacteristics characteristics =
                                 manager.getCameraCharacteristics(cameraId);
                         startSession(context, intent, camera, characteristics, file,
-                                durationMs, recordAudio, bitrate, fps);
+                                durationMs, recordAudio, bitrate, fps, myGen);
                     } catch (Exception e) {
                         Log.e(TAG, "start session error", e);
-                        failAttempt(outFile, "Error starting recording: " + e.getMessage());
+                        failAttempt(myGen, outFile, "Error starting recording: " + e.getMessage());
                     }
                 }
 
                 @Override
                 public void onDisconnected(CameraDevice camera) {
+                    if (myGen != sessionGen) return;
                     Log.i(TAG, "camera disconnected");
-                    failAttempt(outFile, "Camera disconnected tiba-tiba.");
+                    failAttempt(myGen, outFile, "Camera disconnected tiba-tiba.");
                 }
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
+                    if (myGen != sessionGen) return;
                     Log.e(TAG, "camera error: " + error);
                     // Error 4 (perangkat) sering sesaat: coba lagi maksimal 3x.
+                    // Dijadwalkan via main looper supaya tetap jalan walau thread mati.
                     if (error == CameraDevice.StateCallback.ERROR_CAMERA_DEVICE
                             && openRetryCount < MAX_OPEN_RETRIES) {
                         openRetryCount++;
                         Log.i(TAG, "retry open camera (" + openRetryCount + ")");
-                        bgHandler.postDelayed(() -> attemptOpenCamera(context, intent, cameraId,
-                                outFile, durationMs, recordAudio, bitrate, fps), 800);
+                        new Handler(Looper.getMainLooper()).postDelayed(
+                                () -> attemptOpenCamera(context, intent, cameraId,
+                                        outFile, durationMs, recordAudio, bitrate, fps, myGen), 800);
                         return;
                     }
-                    failAttempt(outFile, "Failed opening camera, error code: " + error
+                    failAttempt(myGen, outFile, "Failed opening camera, error code: " + error
                             + " (retry " + openRetryCount + "x)."
                             + " Kamera tersedia: " + availableCameras(manager));
                 }
-            }, bgHandler);
+            }, bgHandler());
         } catch (Exception e) {
+            if (myGen != sessionGen) return;
             Log.e(TAG, "open camera error", e);
-            failAttempt(outFile, "Error opening camera: " + e.getMessage());
+            failAttempt(myGen, outFile, "Error opening camera: " + e.getMessage());
         }
     }
 
@@ -214,7 +235,9 @@ public class CamVideoService extends Service {
     }
 
     /** Gagal total: hapus file setengah-jadi supaya nama bisa dipakai ulang. */
-    private void failAttempt(File outFile, String error) {
+    private void failAttempt(long myGen, File outFile, String error) {
+        if (myGen != sessionGen) return; // basi
+        isAttemptInFlight = false;
         if (outFile != null && outFile.exists() && !isRecording) {
             //noinspection ResultOfMethodCallIgnored
             outFile.delete();
@@ -229,7 +252,7 @@ public class CamVideoService extends Service {
                               final CameraCharacteristics characteristics,
                               final File outputFile, final int durationMs,
                               final boolean recordAudio, final int bitrate,
-                              final int fps) throws Exception {
+                              final int fps, final long myGen) throws Exception {
 
         // Pilih ukuran video terbesar yang muat 1080p.
         android.hardware.camera2.params.StreamConfigurationMap map =
@@ -292,15 +315,20 @@ public class CamVideoService extends Service {
         camera.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
             @Override
             public void onConfigured(CameraCaptureSession session) {
+                if (myGen != sessionGen) {
+                    try { session.close(); } catch (RuntimeException ignored) {}
+                    return;
+                }
                 captureSession = session;
                 try {
                     CaptureRequest.Builder req = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
                     req.addTarget(recorderSurface);
                     req.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
-                    session.setRepeatingRequest(req.build(), null, new Handler(backgroundThread.getLooper()));
+                    session.setRepeatingRequest(req.build(), null, bgHandler());
 
                     mediaRecorder.start();
                     isRecording = true;
+                    isAttemptInFlight = false;
                     recordStartMs = System.currentTimeMillis();
                     goForeground();
 
@@ -308,7 +336,9 @@ public class CamVideoService extends Service {
                             + "\nSize: " + videoSize.getWidth() + "x" + videoSize.getHeight()
                             + "\nMax Duration: " + (durationMs <= 0 ? "unlimited" : (durationMs / 1000) + "s"), null);
                 } catch (Exception e) {
+                    if (myGen != sessionGen) return;
                     Log.e(TAG, "onConfigured error", e);
+                    isAttemptInFlight = false;
                     StatusFile.write("", "Error starting capture: " + e.getMessage());
                     cleanup();
                     stopSelf();
@@ -317,12 +347,14 @@ public class CamVideoService extends Service {
 
             @Override
             public void onConfigureFailed(CameraCaptureSession session) {
+                if (myGen != sessionGen) return;
                 Log.e(TAG, "session configure failed");
+                isAttemptInFlight = false;
                 StatusFile.write("", "Camera session configuration failed");
                 cleanup();
                 stopSelf();
             }
-        }, new Handler(backgroundThread.getLooper()));
+        }, bgHandler());
     }
 
     @Override
