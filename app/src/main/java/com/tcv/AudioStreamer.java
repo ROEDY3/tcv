@@ -33,12 +33,17 @@ public class AudioStreamer {
         int enc = AudioFormat.ENCODING_PCM_16BIT;
         int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, ch, enc);
         if (minBuf <= 0) throw new Exception("AudioRecord tidak didukung di HP ini");
-        recorder = new AudioRecord(MediaRecorder.AudioSource.MIC,
+        recorder = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE, ch, enc, minBuf * 4);
         if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
             recorder.release();
             recorder = null;
             throw new Exception("AudioRecord init gagal (mic dipakai app lain?)");
+        }
+        android.media.audiofx.AcousticEchoCanceler aec = android.media.audiofx.AcousticEchoCanceler.create(recorder.getAudioSessionId());
+        if (aec != null) {
+            aec.setEnabled(true);
+            Log.i(TAG, "AEC enabled");
         }
         recorder.startRecording();
         running = true;
