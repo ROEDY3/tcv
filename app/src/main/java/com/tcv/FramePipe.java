@@ -174,6 +174,7 @@ public class FramePipe {
             }
             server = null;
         }
+        serverThread = null;
         if (imageReader != null) {
             try {
                 imageReader.close();

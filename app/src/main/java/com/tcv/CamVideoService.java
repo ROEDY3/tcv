@@ -239,12 +239,17 @@ public class CamVideoService extends Service {
         if (streamFps <= 0 || streamFps > 30) streamFps = 10;
 
         try {
+            // Bersihkan sisa pipa lama dulu (kalau ada yang nyangkut),
+            // supaya bind selalu mulai dari keadaan bersih.
+            stopPipe();
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             if (pipe == null) pipe = new FramePipe();
             pipe.setTargetFps(streamFps);
             pipe.start(streamW, streamH, bgHandler());
         } catch (Exception e) {
             Log.e(TAG, "pipe start gagal", e);
-            StatusFile.write(context, "", "Gagal menyalakan pipa frame: " + e.getMessage());
+            StatusFile.write(context, "", "Gagal menyalakan pipa frame: " + e.getMessage()
+                    + ". Bila masih gagal: pastikan tidak ada aplikasi TCV ganda (clone/profil kedua) yang sedang streaming.");
             return;
         }
         streamOn = true;

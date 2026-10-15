@@ -24,6 +24,11 @@ public class MediaFiles {
 
     public static final String STATUS_NAME = "tcv_status.json";
 
+    /** Rapikan escape JSON (\/ -> /) supaya enak dibaca manusia. */
+    private static String cleanJson(String json) {
+        return json.replace("\\/", "/");
+    }
+
     /** Path file status seperti terlihat dari Termux. */
     public static String statusPathForShell() {
         return Environment.getExternalStorageDirectory().getAbsolutePath()
@@ -114,7 +119,7 @@ public class MediaFiles {
                 cr.delete(uri, null, null);
                 return;
             }
-            os.write(json.getBytes("UTF-8"));
+            os.write(cleanJson(json).getBytes("UTF-8"));
             os.flush();
             os.close();
         } catch (Exception e) {
