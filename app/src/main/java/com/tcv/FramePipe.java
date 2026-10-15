@@ -2,13 +2,16 @@ package com.tcv;
 
 import android.media.Image;
 import android.media.ImageReader;
+import android.content.Context;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.os.Environment;
 import android.os.Handler;
 import android.util.Log;
 import android.view.Surface;
 
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -24,6 +27,13 @@ public class FramePipe {
 
     private static final String TAG = "TCV";
     public static final String SOCKET_NAME = "tcv_frames";
+
+    /** Soket berupa file di Download: terbaca Python bionic MAUPUN glibc
+     *  (soket abstract diblokir di dalam proot-glibc). */
+    public static String socketPath() {
+        return Environment.getExternalStorageDirectory().getAbsolutePath()
+                + "/Download/" + SOCKET_NAME + ".sock";
+    }
 
     private ImageReader imageReader;
     private LocalServerSocket server;
@@ -45,7 +55,7 @@ public class FramePipe {
         if (fps > 0 && fps <= 30) minIntervalMs = 1000 / fps;
     }
 
-    public synchronized void start(int w, int h, Handler bgHandler) throws Exception {
+    public synchronized void start(Context context, int w, int h, Handler bgHandler) throws Exception {
         if (running) return;
         width = w;
         height = h;
@@ -73,7 +83,14 @@ public class FramePipe {
             }
         }, bgHandler);
 
-        server = new LocalServerSocket(SOCKET_NAME);
+        server = null;
+        File sockFile = new File(socketPath());
+        if (sockFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            sockFile.delete(); // sisa sesi mati sebelumnya
+        }
+        server = new LocalServerSocket(new LocalSocketAddress(socketPath(),
+                LocalSocketAddress.Namespace.FILESYSTEM));
         running = true;
         serverThread = new Thread(this::acceptLoop, "TCVFrames");
         serverThread.start();
@@ -191,8 +208,8 @@ public class FramePipe {
         return running;
     }
 
-    /** Alamat soket untuk Python: abstract namespace. */
+    /** Alamat soket untuk Python: path file biasa. */
     public static LocalSocketAddress address() {
-        return new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT);
+        return new LocalSocketAddress(socketPath(), LocalSocketAddress.Namespace.FILESYSTEM);
     }
 }

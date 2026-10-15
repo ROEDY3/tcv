@@ -23,6 +23,7 @@ import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
+import android.view.WindowManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -245,7 +246,7 @@ public class CamVideoService extends Service {
             try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             if (pipe == null) pipe = new FramePipe();
             pipe.setTargetFps(streamFps);
-            pipe.start(streamW, streamH, bgHandler());
+            pipe.start(context, streamW, streamH, bgHandler());
         } catch (Exception e) {
             Log.e(TAG, "pipe start gagal", e);
             StatusFile.write(context, "", "Gagal menyalakan pipa frame: " + e.getMessage()
@@ -365,6 +366,45 @@ public class CamVideoService extends Service {
         }
     }
 
+    /** Derajat rotasi layar saat ini: 0/90/180/270. */
+    private static int deviceDegrees(Context context) {
+        try {
+            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            switch (wm.getDefaultDisplay().getRotation()) {
+                case android.view.Surface.ROTATION_90: return 90;
+                case android.view.Surface.ROTATION_180: return 180;
+                case android.view.Surface.ROTATION_270: return 270;
+                default: return 0;
+            }
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Orientasi hasil (video maupun JPEG stream) supaya tegak mengikuti
+     * posisi HP, apa pun orientasi sensor kameranya.
+     */
+    private static int orientationHint(Context context, String cameraId) {
+        try {
+            CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            CameraCharacteristics c = manager.getCameraCharacteristics(cameraId);
+            Integer sensor = c.get(CameraCharacteristics.SENSOR_ORIENTATION);
+            int sensorDeg = sensor != null ? sensor : 90;
+            Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+            boolean front = facing != null
+                    && facing == CameraCharacteristics.LENS_FACING_FRONT;
+            int device = deviceDegrees(context);
+            if (front) {
+                return (sensorDeg + device) % 360;
+            } else {
+                return (sensorDeg - device + 360) % 360;
+            }
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     /** Siapkan MediaRecorder (tanpa start). Dipanggil sekali per perintah record. */
     private void prepareRecorder(Context context) throws Exception {
         final CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -401,6 +441,8 @@ public class CamVideoService extends Service {
         }
         mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
         mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
+        // Kunci orientasi: video tersimpan tegak mengikuti posisi HP.
+        mediaRecorder.setOrientationHint(orientationHint(context, recCameraId));
         mediaRecorder.setVideoFrameRate(recFps);
         mediaRecorder.setVideoEncodingBitRate(recBitrate);
         mediaRecorder.setOutputFile(videoPfd.getFileDescriptor());
@@ -459,14 +501,18 @@ public class CamVideoService extends Service {
                     }
                     captureSession = session;
                     try {
-                        CaptureRequest.Builder req = cameraDevice.createCaptureRequest(
-                                isRecording || wantRecord
-                                        ? CameraDevice.TEMPLATE_RECORD
-                                        : CameraDevice.TEMPLATE_PREVIEW);
-                        for (Surface s : surfaces) req.addTarget(s);
-                        req.set(CaptureRequest.CONTROL_AF_MODE,
-                                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
-                        session.setRepeatingRequest(req.build(), null, bgHandler());
+                    CaptureRequest.Builder req = cameraDevice.createCaptureRequest(
+                            isRecording || wantRecord
+                                    ? CameraDevice.TEMPLATE_RECORD
+                                    : CameraDevice.TEMPLATE_PREVIEW);
+                    for (Surface s : surfaces) req.addTarget(s);
+                    req.set(CaptureRequest.CONTROL_AF_MODE,
+                            CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                    // Frame JPEG stream ikut tegak mengikuti posisi HP.
+                    req.set(CaptureRequest.JPEG_ORIENTATION,
+                            orientationHint(getApplicationContext(),
+                                    wantRecord ? recCameraId : streamCameraId()));
+                    session.setRepeatingRequest(req.build(), null, bgHandler());
 
                         Context context = getApplicationContext();
                         if (wantRecord && !isRecording && mediaRecorder != null) {
