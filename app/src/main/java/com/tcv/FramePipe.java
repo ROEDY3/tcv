@@ -107,6 +107,37 @@ public class FramePipe {
         return port;
     }
 
+    /** Satu frame + id-nya, untuk konsumen HTTP. */
+    public static class Frame {
+        public final int id;
+        public final byte[] jpeg;
+
+        Frame(int id, byte[] jpeg) {
+            this.id = id;
+            this.jpeg = jpeg;
+        }
+    }
+
+    /**
+     * Tunggu frame yang lebih baru dari lastSeen (maks timeoutMs).
+     * Kembalikan null bila timeout/berhenti. Dipakai soket TCP dan HTTP.
+     */
+    public Frame awaitFrame(int lastSeen, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (frameLock) {
+            while (running && frameId == lastSeen) {
+                long wait = deadline - System.currentTimeMillis();
+                if (wait <= 0) return null;
+                try {
+                    frameLock.wait(Math.min(wait, 500));
+                } catch (InterruptedException ignored) {
+                }
+            }
+            if (!running || latestJpeg == null) return null;
+            return new Frame(frameId, latestJpeg);
+        }
+    }
+
     private void acceptLoop() {
         while (running) {
             Socket client = null;
@@ -131,21 +162,10 @@ public class FramePipe {
             int lastSeen = -1;
             byte[] lenBuf = new byte[4];
             while (running && client.isConnected() && !client.isClosed()) {
-                byte[] jpeg;
-                int id;
-                synchronized (frameLock) {
-                    while (running && frameId == lastSeen) {
-                        try {
-                            frameLock.wait(500);
-                        } catch (InterruptedException ignored) {
-                        }
-                    }
-                    if (!running) return;
-                    jpeg = latestJpeg;
-                    id = frameId;
-                }
-                if (jpeg == null) continue;
-                lastSeen = id;
+                Frame f = awaitFrame(lastSeen, 2000);
+                if (f == null) continue;
+                lastSeen = f.id;
+                byte[] jpeg = f.jpeg;
                 lenBuf[0] = (byte) ((jpeg.length >> 24) & 0xFF);
                 lenBuf[1] = (byte) ((jpeg.length >> 16) & 0xFF);
                 lenBuf[2] = (byte) ((jpeg.length >> 8) & 0xFF);

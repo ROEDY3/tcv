@@ -58,6 +58,9 @@ public class CamVideoService extends Service {
     private static ParcelFileDescriptor videoPfd;
     private static Uri videoUri;
     private static FramePipe pipe;
+    private static AudioStreamer audioStreamer;
+    private static MjpegHttpServer httpServer;
+    private static final int HTTP_PORT = 8091;
 
     private static boolean isRecording = false;
     private static boolean wantRecord = false;
@@ -92,6 +95,7 @@ public class CamVideoService extends Service {
     @Override
     public void onDestroy() {
         stopPipe();
+        stopHttpAudio();
         cleanupRecording();
         serviceAlive = false;
         streamOn = false;
@@ -197,10 +201,22 @@ public class CamVideoService extends Service {
     }
 
     private String streamInfo() {
-        if (!streamOn || pipe == null) return null;
-        return "127.0.0.1:" + pipe.getPort()
-                + " " + pipe.getWidth() + "x" + pipe.getHeight()
-                + " penonton=" + pipe.getViewers();
+        if (!streamOn) return null;
+        StringBuilder sb = new StringBuilder();
+        if (pipe != null) {
+            sb.append("tcp=127.0.0.1:").append(pipe.getPort())
+                    .append(" ").append(pipe.getWidth()).append("x").append(pipe.getHeight())
+                    .append(" penonton=").append(pipe.getViewers());
+        }
+        if (httpServer != null && httpServer.isRunning()) {
+            sb.append(" http=127.0.0.1:").append(httpServer.getPort())
+                    .append("/mjpeg(v").append(httpServer.getMjpegViewers()).append(")")
+                    .append("+/audio.wav(a").append(httpServer.getAudioViewers()).append(")");
+        }
+        if (audioStreamer != null) {
+            sb.append(" mic=").append(audioStreamer.isRunning() ? "on" : "mati");
+        }
+        return sb.toString();
     }
 
     private void goForeground(String text) {
@@ -299,6 +315,22 @@ public class CamVideoService extends Service {
         sessionGen++;
         final long myGen = sessionGen;
         isAttemptInFlight = true;
+        // HTTP OBS + mic ikut nyala bersama stream (kegagalan mic tidak menggagalkan video).
+        try {
+            if (audioStreamer == null) audioStreamer = new AudioStreamer();
+            audioStreamer.start();
+        } catch (Exception e) {
+            Log.e(TAG, "mic gagal: " + e.getMessage());
+            StatusFile.write(context, "", "Mic gagal dinyalakan: " + e.getMessage()
+                    + " (video tetap jalan bila kamera OK).");
+        }
+        try {
+            if (httpServer == null) httpServer = new MjpegHttpServer();
+            httpServer.start(pipe, audioStreamer, HTTP_PORT);
+        } catch (Exception e) {
+            Log.e(TAG, "http gagal: " + e.getMessage());
+            StatusFile.write(context, "", "Server HTTP gagal: " + e.getMessage());
+        }
         if (cameraDevice != null) {
             buildSession(myGen, nextAttempt());
         } else {
@@ -315,12 +347,28 @@ public class CamVideoService extends Service {
     private void wantStreamOff() {
         streamOn = false;
         stopPipe();
+        stopHttpAudio();
     }
 
     private void stopPipe() {
         if (pipe != null) {
             try {
                 pipe.stop();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void stopHttpAudio() {
+        if (httpServer != null) {
+            try {
+                httpServer.stop();
+            } catch (Exception ignored) {
+            }
+        }
+        if (audioStreamer != null) {
+            try {
+                audioStreamer.stop();
             } catch (Exception ignored) {
             }
         }
