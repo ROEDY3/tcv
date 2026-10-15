@@ -51,3 +51,4 @@ unduh artifact `tcv-app`. Tanpa Android SDK di HP.
 
 GPLv3 — lihat file `LICENSE`. Bagian mesin rekaman diadaptasi dari pola
 Camera2 + MediaRecorder (segmen open source Termux:API).
+# tcv
