@@ -16,20 +16,20 @@
         android:id="@+id/status_text"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Langkah 1: beri izin kamera + mikrofon."
+        android:text="Langkah 1: beri izin."
         android:paddingBottom="16dp" />
 
     <Button
         android:id="@+id/btn_permissions"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="1. Beri izin Kamera + Mikrofon" />
+        android:text="1. Beri izin (kamera + mikrofon + notif)" />
 
     <Button
-        android:id="@+id/btn_storage"
+        android:id="@+id/btn_service"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="2. Beri izin Penyimpanan" />
+        android:text="2. Aktifkan layanan" />
 
     <Button
         android:id="@+id/btn_battery"
@@ -41,6 +41,6 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingTop="16dp"
-        android:text="Langkah 3: dari Termux jalankan: camvideo -d -l 5 -f ujicoba.mp4" />
+        android:text="Langkah 4: dari Termux jalankan: camvideo -d -l 5 -f ujicoba.mp4" />
 
 </LinearLayout>

@@ -11,15 +11,19 @@ import android.os.PowerManager;
 import android.widget.Button;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * Layar sekali-pakai: meminta izin yang dibutuhkan perekaman,
- * lalu pengguna kembali ke Termux. Tidak ada logika rekaman di sini.
+ * Layar utama. Tugasnya: izin + tombol "Aktifkan layanan".
+ * Service dinyalakan dari sini (saat aplikasi terlihat) sesuai aturan Android.
  */
 public class MainActivity extends Activity {
 
     private static final int REQ_CODE = 42;
 
     private TextView statusText;
+    private Button btnService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -28,22 +32,36 @@ public class MainActivity extends Activity {
 
         statusText = findViewById(R.id.status_text);
         Button btnPermissions = findViewById(R.id.btn_permissions);
-        Button btnStorage = findViewById(R.id.btn_storage);
-
-        btnPermissions.setOnClickListener(v -> requestPermissions(new String[]{
-                Manifest.permission.CAMERA,
-                Manifest.permission.RECORD_AUDIO
-        }, REQ_CODE));
-
-        btnStorage.setOnClickListener(v -> requestPermissions(new String[]{
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-        }, REQ_CODE));
-
+        btnService = findViewById(R.id.btn_service);
         Button btnBattery = findViewById(R.id.btn_battery);
+
+        btnPermissions.setOnClickListener(v -> {
+            List<String> perms = new ArrayList<>();
+            perms.add(Manifest.permission.CAMERA);
+            perms.add(Manifest.permission.RECORD_AUDIO);
+            if (Build.VERSION.SDK_INT >= 33) {
+                perms.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
+            requestPermissions(perms.toArray(new String[0]), REQ_CODE);
+        });
+
+        btnService.setOnClickListener(v -> {
+            Intent svc = new Intent(this, CamVideoService.class);
+            if (CamVideoService.serviceAlive) {
+                svc.setAction("stop");
+                startService(svc);
+            } else {
+                svc.setAction("start");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc);
+                } else {
+                    startService(svc);
+                }
+            }
+            refreshStatus();
+        });
+
         btnBattery.setOnClickListener(v -> {
-            // Minta sistem mengecualikan aplikasi dari optimasi baterai
-            // supaya service rekaman tidak dibunuh saat layar mati.
             try {
                 Intent i = new Intent(
                         android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -77,20 +95,20 @@ public class MainActivity extends Activity {
     private void refreshStatus() {
         boolean cam = has(Manifest.permission.CAMERA);
         boolean mic = has(Manifest.permission.RECORD_AUDIO);
-        boolean storage = has(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        boolean notif = Build.VERSION.SDK_INT < 33 || has(Manifest.permission.POST_NOTIFICATIONS);
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         boolean noBatteryOpt = pm == null || pm.isIgnoringBatteryOptimizations(getPackageName());
-        if (cam && mic && storage) {
-            statusText.setText("Semua izin OK."
-                    + (noBatteryOpt ? " Optimasi baterai: mati (bagus)."
-                    : " Saran: tekan tombol 3 agar rekaman tidak dibunuh sistem.")
-                    + " Silakan kembali ke Termux dan jalankan camvideo.");
-        } else {
-            StringBuilder sb = new StringBuilder("Belum lengkap:");
-            if (!cam) sb.append("\n- kamera BELUM");
-            if (!mic) sb.append("\n- mikrofon BELUM");
-            if (!storage) sb.append("\n- penyimpanan BELUM");
-            statusText.setText(sb.toString());
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Izin kamera: ").append(cam ? "OK" : "BELUM").append("\n");
+        sb.append("Izin mikrofon: ").append(mic ? "OK" : "BELUM").append("\n");
+        sb.append("Izin notifikasi: ").append(notif ? "OK" : "BELUM").append("\n");
+        sb.append("Optimasi baterai: ").append(noBatteryOpt ? "mati (bagus)" : "aktif (disarankan matikan via tombol 3)").append("\n");
+        sb.append("Layanan: ").append(CamVideoService.serviceAlive ? "AKTIF siaga" : "MATI").append("\n");
+        if (cam && mic && CamVideoService.serviceAlive) {
+            sb.append("Siap! Kembali ke Termux dan jalankan camvideo.");
         }
+        statusText.setText(sb.toString());
+        btnService.setText(CamVideoService.serviceAlive ? "Matikan layanan" : "Aktifkan layanan");
     }
 }

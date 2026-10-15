@@ -6,17 +6,34 @@ android {
 
     defaultConfig {
         applicationId "com.tcv"
-        minSdk 24
-        // Target 28 disengaja: pola startService dari BroadcastReceiver
-        // + legacy external storage, sama seperti pola Termux:API yang terbukti jalan.
-        targetSdk 28
-        versionCode 2
-        versionName "0.1.1"
+        // 29+ (Android 10): MediaStore RELATIVE_PATH tersedia,
+        // tidak perlu izin storage warisan sama sekali.
+        minSdk 29
+        // 34: standar Android 14+ (tipe foreground service camera|microphone).
+        targetSdk 34
+        versionCode 3
+        versionName "0.2.0"
+    }
+
+    signingConfigs {
+        // Keystore tetap milik proyek (test key, aman di-commit seperti
+        // pola testkey upstream): semua build CI satu tanda tangan
+        // sehingga update APK mulus tanpa uninstall.
+        debug {
+            storeFile file('tcv-debug.jks')
+            storePassword 'tcvdebug12'
+            keyAlias 'tcv'
+            keyPassword 'tcvdebug12'
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.debug
         }
     }
 
@@ -26,7 +43,6 @@ android {
     }
 }
 
-// Sengaja tanpa dependencies eksternal: semua pakai framework Android saja,
-// supaya build cepat dan kecil kemungkinan gagal.
+// Sengaja tanpa dependencies eksternal: semua pakai framework Android saja.
 dependencies {
 }

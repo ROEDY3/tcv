@@ -14,7 +14,7 @@ set -e
 
 SCRIPTNAME=camvideo
 RECEIVER="com.tcv/.CamVideoReceiver"
-STATUS_FILE="/storage/emulated/0/Movies/.tcv_status.json"
+STATUS_FILE="/storage/emulated/0/Download/tcv_status.json"
 
 show_usage () {
     echo "Usage: $SCRIPTNAME [args]"
