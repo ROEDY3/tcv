@@ -36,7 +36,8 @@ public class StatusFile {
         }
     }
 
-    public static void writeInfo(Context context, boolean isRecording, String outputFile) {
+    public static void writeInfo(Context context, boolean isRecording, String outputFile,
+                               boolean streamOn, String streamInfo) {
         synchronized (LOCK) {
             try {
                 JSONObject o = new JSONObject();
@@ -44,6 +45,10 @@ public class StatusFile {
                 o.put("isRecording", isRecording);
                 if (isRecording && outputFile != null) {
                     o.put("outputFile", outputFile);
+                }
+                o.put("streamOn", streamOn);
+                if (streamOn && streamInfo != null) {
+                    o.put("stream", streamInfo);
                 }
                 MediaFiles.writeStatus(context, o.toString(2));
             } catch (Exception ignored) {

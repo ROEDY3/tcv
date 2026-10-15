@@ -28,6 +28,8 @@ show_usage () {
     echo "-b <bitrate> Start recording w/ specified video bitrate (in kbps)"
     echo "-r <fps>     Start recording w/ specified frame rate"
     echo "-n           Start recording w/o audio"
+    echo "-s           Start frame stream (Unix socket tcv_frames, for Python)"
+    echo "-S           Stop frame stream"
     echo "-i           Get info about current recording"
     echo "-q           Quits recording"
 }
@@ -68,7 +70,7 @@ show_status () {
     fi
 }
 
-while getopts h,f:,c:,l:,b:,r:,n,d,i,q option
+while getopts h,f:,c:,l:,b:,r:,n,d,i,q,s,S option
 do
     case "$option" in
         h) sole "$@"
@@ -94,6 +96,12 @@ do
            add_params --ez audio false
            ;;
         d) record=yes
+           ;;
+        s) sole "$@"
+           add_params -a stream_start
+           ;;
+        S) sole "$@"
+           add_params -a stream_stop
            ;;
         i) sole "$@"
            add_params -a info

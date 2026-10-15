@@ -105,6 +105,7 @@ public class MainActivity extends Activity {
         sb.append("Izin notifikasi: ").append(notif ? "OK" : "BELUM").append("\n");
         sb.append("Optimasi baterai: ").append(noBatteryOpt ? "mati (bagus)" : "aktif (disarankan matikan via tombol 3)").append("\n");
         sb.append("Layanan: ").append(CamVideoService.serviceAlive ? "AKTIF siaga" : "MATI").append("\n");
+        sb.append("Stream: ").append(CamVideoService.streamOn ? "JALAN (tcv_frames)" : "mati").append("\n");
         if (cam && mic && CamVideoService.serviceAlive) {
             sb.append("Siap! Kembali ke Termux dan jalankan camvideo.");
         }
