@@ -89,8 +89,12 @@ public class FramePipe {
             //noinspection ResultOfMethodCallIgnored
             sockFile.delete(); // sisa sesi mati sebelumnya
         }
-        server = new LocalServerSocket(new LocalSocketAddress(socketPath(),
-                LocalSocketAddress.Namespace.FILESYSTEM));
+        // Soket FILESYSTEM tidak punya konstruktor langsung:
+        // bind manual -> listen -> bungkus fd jadi LocalServerSocket.
+        LocalSocket bound = new LocalSocket();
+        bound.bind(new LocalSocketAddress(socketPath(), LocalSocketAddress.Namespace.FILESYSTEM));
+        bound.listen(4);
+        server = new LocalServerSocket(bound.getFileDescriptor());
         running = true;
         serverThread = new Thread(this::acceptLoop, "TCVFrames");
         serverThread.start();
