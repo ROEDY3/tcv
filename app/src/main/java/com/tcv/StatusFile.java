@@ -4,7 +4,6 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileWriter;
-import java.io.IOException;
 
 /**
  * Hasil perintah ditulis ke file JSON di folder Movies,
@@ -54,7 +53,7 @@ public class StatusFile {
                 w.write(o.toString(2));
                 w.flush();
                 w.close();
-            } catch (IOException ignored) {
+            } catch (Exception ignored) {
             }
         }
     }
