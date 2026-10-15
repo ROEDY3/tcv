@@ -94,8 +94,8 @@ public class FramePipe {
         java.io.FileDescriptor rawFd = android.system.Os.socket(
                 android.system.OsConstants.AF_UNIX,
                 android.system.OsConstants.SOCK_STREAM, 0);
-        android.system.Os.bind(rawFd,
-                android.system.UnixSocketAddress.createFileSystem(socketPath()));
+        android.system.Os.bind(rawFd, new LocalSocketAddress(socketPath(),
+                LocalSocketAddress.Namespace.FILESYSTEM));
         android.system.Os.listen(rawFd, 4);
         server = new LocalServerSocket(rawFd);
         running = true;
