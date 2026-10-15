@@ -73,6 +73,24 @@ public class MainActivity extends Activity {
             }
         });
 
+        Button btnAllFiles = findViewById(R.id.btn_allfiles);
+        btnAllFiles.setOnClickListener(v -> {
+            // Akses semua file: agar file status selalu tersimpan normal.
+            try {
+                Intent i = new Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            } catch (Exception e) {
+                try {
+                    startActivity(new Intent(
+                            android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                } catch (Exception e2) {
+                    statusText.setText("Buka manual: Settings > Apps > Special app access > All files access > TCV Camera > Allow.");
+                }
+            }
+        });
+
         refreshStatus();
     }
 
@@ -105,7 +123,10 @@ public class MainActivity extends Activity {
         sb.append("Izin notifikasi: ").append(notif ? "OK" : "BELUM").append("\n");
         sb.append("Optimasi baterai: ").append(noBatteryOpt ? "mati (bagus)" : "aktif (disarankan matikan via tombol 3)").append("\n");
         sb.append("Layanan: ").append(CamVideoService.serviceAlive ? "AKTIF siaga" : "MATI").append("\n");
-        sb.append("Stream: ").append(CamVideoService.streamOn ? "JALAN (tcv_frames)" : "mati").append("\n");
+        sb.append("Stream: ").append(CamVideoService.streamOn ? "JALAN (127.0.0.1)" : "mati").append("\n");
+        boolean allFiles = Build.VERSION.SDK_INT < 30
+                || android.os.Environment.isExternalStorageManager();
+        sb.append("Akses semua file: ").append(allFiles ? "OK" : "BELUM (tombol 4)").append("\n");
         if (cam && mic && CamVideoService.serviceAlive) {
             sb.append("Siap! Kembali ke Termux dan jalankan camvideo.");
         }

@@ -1,6 +1,9 @@
 package com.tcv;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
+import android.widget.Toast;
 
 import org.json.JSONObject;
 
@@ -9,9 +12,12 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Hasil perintah ditulis ke Download/tcv_status.json via MediaStore,
- * supaya gampang dibaca dari shell Termux:
+ * Hasil perintah ditulis ke Download/tcv_status.json supaya gampang
+ * dibaca dari shell Termux:
  *   cat /storage/emulated/0/Download/tcv_status.json
+ *
+ * Bila tulis gagal, alasannya dimunculkan sebagai Toast supaya
+ * terlihat manusia (tidak diam seperti log).
  */
 public class StatusFile {
 
@@ -19,6 +25,18 @@ public class StatusFile {
 
     private static String now() {
         return new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+    }
+
+    private static void toastFail(final Context context) {
+        final String err = MediaFiles.lastError;
+        if (err == null) return;
+        try {
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(context.getApplicationContext(),
+                            "TCV: status gagal disimpan: " + err,
+                            Toast.LENGTH_LONG).show());
+        } catch (Exception ignored) {
+        }
     }
 
     public static void write(Context context, String message, String error) {
@@ -30,7 +48,9 @@ public class StatusFile {
                 if (error != null && !error.isEmpty()) {
                     o.put("error", error);
                 }
-                MediaFiles.writeStatus(context, o.toString(2));
+                if (!MediaFiles.writeStatus(context, o.toString(2))) {
+                    toastFail(context);
+                }
             } catch (Exception ignored) {
             }
         }
@@ -50,7 +70,9 @@ public class StatusFile {
                 if (streamOn && streamInfo != null) {
                     o.put("stream", streamInfo);
                 }
-                MediaFiles.writeStatus(context, o.toString(2));
+                if (!MediaFiles.writeStatus(context, o.toString(2))) {
+                    toastFail(context);
+                }
             } catch (Exception ignored) {
             }
         }

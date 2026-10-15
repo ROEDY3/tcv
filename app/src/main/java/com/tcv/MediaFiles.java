@@ -24,9 +24,80 @@ public class MediaFiles {
 
     public static final String STATUS_NAME = "tcv_status.json";
 
+    /** Alasan kegagalan tulis status terakhir (untuk diagnosis). */
+    public static volatile String lastError = null;
+
     /** Rapikan escape JSON (\/ -> /) supaya enak dibaca manusia. */
     private static String cleanJson(String json) {
         return json.replace("\\/", "/");
+    }
+
+    /** File status seperti terlihat dari Termux. */
+    public static java.io.File statusDirectFile() {
+        return new java.io.File(Environment.getExternalStorageDirectory(),
+                Environment.DIRECTORY_DOWNLOADS + "/" + STATUS_NAME);
+    }
+
+    /**
+     * Tulis status. Coba tulis-langsung dulu (bisa bila aplikasi punya
+     * "akses semua file"), lalu MediaStore. Kembalikan true bila berhasil.
+     */
+    public static boolean writeStatus(Context context, String json) {
+        lastError = null;
+        String clean = cleanJson(json);
+        try {
+            java.io.FileWriter w = new java.io.FileWriter(statusDirectFile(), false);
+            w.write(clean);
+            w.flush();
+            w.close();
+            return true;
+        } catch (Exception e) {
+            lastError = "direct: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+        }
+        try {
+            ContentResolver cr = context.getContentResolver();
+            Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+
+            try (android.database.Cursor c = cr.query(collection,
+                    new String[]{MediaStore.MediaColumns._ID},
+                    MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?",
+                    new String[]{"tcv_status%"}, null)) {
+                if (c != null) {
+                    while (c.moveToNext()) {
+                        long id = c.getLong(0);
+                        try {
+                            cr.delete(android.content.ContentUris.withAppendedId(collection, id),
+                                    null, null);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.MediaColumns.DISPLAY_NAME, STATUS_NAME);
+            v.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+            v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/");
+            Uri uri = cr.insert(collection, v);
+            if (uri == null) {
+                lastError += " | mediastore: insert mengembalikan null";
+                return false;
+            }
+            OutputStream os = cr.openOutputStream(uri);
+            if (os == null) {
+                cr.delete(uri, null, null);
+                lastError += " | mediastore: openOutputStream null";
+                return false;
+            }
+            os.write(clean.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+            return true;
+        } catch (Exception e) {
+            lastError += " | mediastore: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+            return false;
+        }
     }
 
     /** Path file status seperti terlihat dari Termux. */
@@ -102,46 +173,4 @@ public class MediaFiles {
         }
     }
 
-    public static void writeStatus(Context context, String json) {
-        try {
-            ContentResolver cr = context.getContentResolver();
-            Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-
-            // Hapus SEMUA baris lama bernama tcv_status* satu per satu via Uri
-            // (pola delete-by-where terbukti tidak mempan di sebagian HP).
-            try (android.database.Cursor c = cr.query(collection,
-                    new String[]{MediaStore.MediaColumns._ID},
-                    MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?",
-                    new String[]{"tcv_status%"}, null)) {
-                if (c != null) {
-                    while (c.moveToNext()) {
-                        long id = c.getLong(0);
-                        try {
-                            cr.delete(android.content.ContentUris.withAppendedId(collection, id),
-                                    null, null);
-                        } catch (Exception ignored) {
-                        }
-                    }
-                }
-            } catch (Exception ignored) {
-            }
-
-            ContentValues v = new ContentValues();
-            v.put(MediaStore.MediaColumns.DISPLAY_NAME, STATUS_NAME);
-            v.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
-            v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/");
-            Uri uri = cr.insert(collection, v);
-            if (uri == null) return;
-            OutputStream os = cr.openOutputStream(uri);
-            if (os == null) {
-                cr.delete(uri, null, null);
-                return;
-            }
-            os.write(cleanJson(json).getBytes("UTF-8"));
-            os.flush();
-            os.close();
-        } catch (Exception e) {
-            Log.e(TAG, "writeStatus gagal: " + e.getMessage());
-        }
-    }
 }

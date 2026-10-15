@@ -37,6 +37,12 @@
         android:layout_height="wrap_content"
         android:text="3. Matikan optimasi baterai (disarankan)" />
 
+    <Button
+        android:id="@+id/btn_allfiles"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="4. Beri akses semua file (untuk status)" />
+
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
