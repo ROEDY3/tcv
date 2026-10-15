@@ -4,6 +4,9 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * Hasil perintah ditulis ke file JSON di folder Movies,
@@ -18,10 +21,15 @@ public class StatusFile {
         return new File(MovieFiles.moviesDir(), ".tcv_status.json");
     }
 
+    private static String now() {
+        return new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+    }
+
     public static void write(String message, String error) {
         synchronized (LOCK) {
             try {
                 JSONObject o = new JSONObject();
+                o.put("time", now());
                 o.put("message", message == null ? "" : message);
                 if (error != null && !error.isEmpty()) {
                     o.put("error", error);
@@ -42,6 +50,7 @@ public class StatusFile {
         synchronized (LOCK) {
             try {
                 JSONObject o = new JSONObject();
+                o.put("time", now());
                 o.put("isRecording", isRecording);
                 if (isRecording && outputFile != null) {
                     o.put("outputFile", outputFile);

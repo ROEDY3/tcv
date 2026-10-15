@@ -2,9 +2,12 @@ package com.tcv;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.widget.Button;
 import android.widget.TextView;
 
@@ -37,6 +40,21 @@ public class MainActivity extends Activity {
                 Manifest.permission.WRITE_EXTERNAL_STORAGE
         }, REQ_CODE));
 
+        Button btnBattery = findViewById(R.id.btn_battery);
+        btnBattery.setOnClickListener(v -> {
+            // Minta sistem mengecualikan aplikasi dari optimasi baterai
+            // supaya service rekaman tidak dibunuh saat layar mati.
+            try {
+                Intent i = new Intent(
+                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            } catch (Exception e) {
+                statusText.setText("Tidak bisa membuka pengaturan baterai otomatis. "
+                        + "Buka manual: Settings > Apps > TCV Camera > Battery > Unrestricted.");
+            }
+        });
+
         refreshStatus();
     }
 
@@ -60,8 +78,13 @@ public class MainActivity extends Activity {
         boolean cam = has(Manifest.permission.CAMERA);
         boolean mic = has(Manifest.permission.RECORD_AUDIO);
         boolean storage = has(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        boolean noBatteryOpt = pm == null || pm.isIgnoringBatteryOptimizations(getPackageName());
         if (cam && mic && storage) {
-            statusText.setText("Semua izin OK. Silakan kembali ke Termux dan jalankan camvideo.");
+            statusText.setText("Semua izin OK."
+                    + (noBatteryOpt ? " Optimasi baterai: mati (bagus)."
+                    : " Saran: tekan tombol 3 agar rekaman tidak dibunuh sistem.")
+                    + " Silakan kembali ke Termux dan jalankan camvideo.");
         } else {
             StringBuilder sb = new StringBuilder("Belum lengkap:");
             if (!cam) sb.append("\n- kamera BELUM");

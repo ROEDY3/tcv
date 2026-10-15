@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 # camvideo — rekam video kamera HP lewat aplikasi pendamping com.tcv.
 #
 # Cara pakai mirip termux-camera-video:
@@ -52,7 +52,9 @@ add_params() {
 }
 
 call_api () {
-    am broadcast -n "$RECEIVER" "$@"
+    # --receiver-foreground: beri prioritas foreground agar sistem membangunkan
+    # aplikasi + mengizinkan start service dari background.
+    am broadcast --receiver-foreground -n "$RECEIVER" "$@"
 }
 
 show_status () {

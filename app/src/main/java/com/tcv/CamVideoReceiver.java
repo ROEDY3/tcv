@@ -35,7 +35,23 @@ public class CamVideoReceiver extends BroadcastReceiver {
         if (intent.getExtras() != null) {
             svc.putExtras(intent.getExtras());
         }
-        context.startService(svc);
+        try {
+            // startForegroundService: pola yang benar untuk jalan dari background.
+            // Service kami langsung startForeground() di onStartCommand.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(svc);
+            } else {
+                context.startService(svc);
+            }
+        } catch (Exception e) {
+            // Jangan diam: tulis penyebabnya supaya terlihat dari Termux,
+            // lalu bukakan aplikasi agar jadi foreground.
+            StatusFile.write("", "Gagal menjalankan service: " + e.getClass().getSimpleName()
+                    + ": " + e.getMessage() + ". Aplikasi TCV dibuka; ulangi perintah.");
+            Intent i = new Intent(context, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(i);
+        }
     }
 
     private boolean hasPermission(Context context, String perm) {
