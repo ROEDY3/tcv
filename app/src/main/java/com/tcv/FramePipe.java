@@ -2,41 +2,34 @@ package com.tcv;
 
 import android.media.Image;
 import android.media.ImageReader;
-import android.content.Context;
-import android.net.LocalServerSocket;
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
-import android.os.Environment;
 import android.os.Handler;
 import android.util.Log;
 import android.view.Surface;
 
-import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 
 /**
- * Pipa frame JPEG ke Python di HP yang sama via soket Unix
- * (abstract namespace "tcv_frames").
+ * Pipa frame JPEG ke Python di HP yang sama via TCP localhost.
  *
- * BUKAN localhost/TCP: tanpa jaringan, tanpa WiFi, tanpa izin INTERNET.
+ * Kenapa bukan soket Unix abstract: proot-glibc memblokirnya
+ * (Permission denied). Kenapa bukan soket file: API publik Android
+ * tidak menyediakannya. TCP 127.0.0.1 terbukti jalan di env glibc
+ * (pola yang sama dipakai IP Webcam), tetap 100% di dalam HP:
+ * tanpa WiFi, tak terlihat dari luar.
+ *
  * Protokol per frame: 4 byte big-endian panjang + isi JPEG.
  */
 public class FramePipe {
 
     private static final String TAG = "TCV";
-    public static final String SOCKET_NAME = "tcv_frames";
-
-    /** Soket berupa file di Download: terbaca Python bionic MAUPUN glibc
-     *  (soket abstract diblokir di dalam proot-glibc). */
-    public static String socketPath() {
-        return Environment.getExternalStorageDirectory().getAbsolutePath()
-                + "/Download/" + SOCKET_NAME + ".sock";
-    }
 
     private ImageReader imageReader;
-    private LocalServerSocket server;
+    private ServerSocket server;
     private volatile boolean running = false;
     private Thread serverThread;
 
@@ -48,6 +41,7 @@ public class FramePipe {
     private volatile int viewers = 0;
     private volatile int width;
     private volatile int height;
+    private volatile int port;
 
     private long minIntervalMs = 100; // ~10 fps default
 
@@ -55,8 +49,9 @@ public class FramePipe {
         if (fps > 0 && fps <= 30) minIntervalMs = 1000 / fps;
     }
 
-    public synchronized void start(Context context, int w, int h, Handler bgHandler) throws Exception {
+    public synchronized void start(int port, int w, int h, Handler bgHandler) throws Exception {
         if (running) return;
+        this.port = port;
         width = w;
         height = h;
         imageReader = ImageReader.newInstance(w, h, android.graphics.ImageFormat.JPEG, 2);
@@ -83,25 +78,13 @@ public class FramePipe {
             }
         }, bgHandler);
 
-        server = null;
-        File sockFile = new File(socketPath());
-        if (sockFile.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            sockFile.delete(); // sisa sesi mati sebelumnya
-        }
-        // Soket FILESYSTEM tidak punya konstruktor langsung:
-        // bikin manual via android.system.Os -> listen -> bungkus fd.
-        java.io.FileDescriptor rawFd = android.system.Os.socket(
-                android.system.OsConstants.AF_UNIX,
-                android.system.OsConstants.SOCK_STREAM, 0);
-        android.system.Os.bind(rawFd, new LocalSocketAddress(socketPath(),
-                LocalSocketAddress.Namespace.FILESYSTEM));
-        android.system.Os.listen(rawFd, 4);
-        server = new LocalServerSocket(rawFd);
+        server = new ServerSocket();
+        server.setReuseAddress(true); // pipa lama yang nyangkut langsung bisa dipakai ulang
+        server.bind(new java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), port));
         running = true;
         serverThread = new Thread(this::acceptLoop, "TCVFrames");
         serverThread.start();
-        Log.i(TAG, "FramePipe on, " + w + "x" + h);
+        Log.i(TAG, "FramePipe on 127.0.0.1:" + port + " " + w + "x" + h);
     }
 
     public Surface surface() {
@@ -120,9 +103,13 @@ public class FramePipe {
         return height;
     }
 
+    public int getPort() {
+        return port;
+    }
+
     private void acceptLoop() {
         while (running) {
-            LocalSocket client = null;
+            Socket client = null;
             try {
                 client = server.accept();
                 viewers++;
@@ -136,14 +123,14 @@ public class FramePipe {
         }
     }
 
-    private void serveClient(LocalSocket client) {
+    private void serveClient(Socket client) {
         try {
             client.setSoTimeout(5000);
             OutputStream os = client.getOutputStream();
             InputStream is = client.getInputStream();
             int lastSeen = -1;
             byte[] lenBuf = new byte[4];
-            while (running && client.isConnected()) {
+            while (running && client.isConnected() && !client.isClosed()) {
                 byte[] jpeg;
                 int id;
                 synchronized (frameLock) {
@@ -166,7 +153,6 @@ public class FramePipe {
                 os.write(lenBuf);
                 os.write(jpeg);
                 os.flush();
-                // kalau klien menutup, tulis berikut gagal -> keluar loop
                 if (is.available() > 0) {
                     break;
                 }
@@ -178,7 +164,7 @@ public class FramePipe {
         }
     }
 
-    private void closeQuietly(LocalSocket s) {
+    private void closeQuietly(Socket s) {
         if (s == null) return;
         try {
             s.close();
@@ -213,10 +199,5 @@ public class FramePipe {
 
     public boolean isRunning() {
         return running;
-    }
-
-    /** Alamat soket untuk Python: path file biasa. */
-    public static LocalSocketAddress address() {
-        return new LocalSocketAddress(socketPath(), LocalSocketAddress.Namespace.FILESYSTEM);
     }
 }

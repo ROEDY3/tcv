@@ -80,6 +80,7 @@ public class CamVideoService extends Service {
     private static int streamW = 640;
     private static int streamH = 480;
     private static int streamFps = 10;
+    private static int streamPort = 8090;
 
     @Override
     public void onCreate() {
@@ -154,6 +155,27 @@ public class CamVideoService extends Service {
                 StatusFile.write(context, "Stream dimatikan.", null);
                 goForeground(statusLine());
                 break;
+            case "cameras":
+                // Daftar kamera + arahnya (depan/belakang) tanpa membuka kamera.
+                try {
+                    CameraManager cm = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+                    StringBuilder sb = new StringBuilder("Kamera di HP ini:");
+                    for (String id : cm.getCameraIdList()) {
+                        Integer facing = cm.getCameraCharacteristics(id)
+                                .get(CameraCharacteristics.LENS_FACING);
+                        String arah = facing != null
+                                && facing == CameraCharacteristics.LENS_FACING_FRONT
+                                ? "DEPAN" : facing != null
+                                && facing == CameraCharacteristics.LENS_FACING_BACK
+                                ? "BELAKANG" : "lain";
+                        sb.append("\n- id ").append(id).append(" = ").append(arah);
+                    }
+                    sb.append("\nPakai: camvideo -c <id> ...");
+                    StatusFile.write(context, sb.toString(), null);
+                } catch (Exception e) {
+                    StatusFile.write(context, "", "Gagal baca daftar kamera: " + e.getMessage());
+                }
+                break;
             default:
                 StatusFile.write(context, "", "Unknown command: " + command);
                 break;
@@ -175,7 +197,7 @@ public class CamVideoService extends Service {
 
     private String streamInfo() {
         if (!streamOn || pipe == null) return null;
-        return "socket=" + FramePipe.SOCKET_NAME
+        return "127.0.0.1:" + pipe.getPort()
                 + " " + pipe.getWidth() + "x" + pipe.getHeight()
                 + " penonton=" + pipe.getViewers();
     }
@@ -238,6 +260,8 @@ public class CamVideoService extends Service {
         if (streamW <= 0 || streamW > 1920) streamW = 640;
         if (streamH <= 0 || streamH > 1080) streamH = 480;
         if (streamFps <= 0 || streamFps > 30) streamFps = 10;
+        streamPort = intent.getIntExtra("sport", 8090);
+        if (streamPort < 1024 || streamPort > 65535) streamPort = 8090;
 
         try {
             // Bersihkan sisa pipa lama dulu (kalau ada yang nyangkut),
@@ -246,7 +270,7 @@ public class CamVideoService extends Service {
             try { Thread.sleep(200); } catch (InterruptedException ignored) {}
             if (pipe == null) pipe = new FramePipe();
             pipe.setTargetFps(streamFps);
-            pipe.start(context, streamW, streamH, bgHandler());
+            pipe.start(streamPort, streamW, streamH, bgHandler());
         } catch (Exception e) {
             Log.e(TAG, "pipe start gagal", e);
             StatusFile.write(context, "", "Gagal menyalakan pipa frame: " + e.getMessage()
@@ -525,11 +549,11 @@ public class CamVideoService extends Service {
 
                         if (wantRecord && isRecording && currentShellPath != null) {
                             StatusFile.write(context, "Recording started: " + currentShellPath
-                                    + (streamOn ? "\n+ streaming via " + FramePipe.SOCKET_NAME : "")
+                                    + (streamOn ? "\n+ streaming 127.0.0.1:" + streamPort : "")
                                     + "\nMax Duration: " + (recDurationMs <= 0 ? "unlimited"
                                     : (recDurationMs / 1000) + "s"), null);
                         } else if (streamOn) {
-                            StatusFile.write(context, "Stream jalan: soket " + FramePipe.SOCKET_NAME
+                            StatusFile.write(context, "Stream jalan: 127.0.0.1:" + streamPort
                                     + " (" + streamW + "x" + streamH + ")", null);
                         }
                     } catch (Exception e) {
