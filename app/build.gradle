@@ -11,8 +11,8 @@ android {
         minSdk 29
         // 34: standar Android 14+ (tipe foreground service camera|microphone).
         targetSdk 34
-        versionCode 11
-        versionName "0.5.0"
+        versionCode 12
+        versionName "0.5.1"
     }
 
     signingConfigs {

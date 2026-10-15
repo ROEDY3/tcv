@@ -7,12 +7,18 @@ import android.util.Log;
 
 import java.io.OutputStream;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 
 /**
  * Mic HP -> aliran PCM untuk OBS, via endpoint HTTP /audio.wav.
  * Format: WAV 16 kHz mono 16-bit dengan header "tak berujung"
  * (ffmpeg/OBS membacanya sebagai stream live).
+ *
+ * SEMANTIK SIARAN: banyak klien boleh dengar bersamaan, masing-masing
+ * punya kursor sendiri. Tidak ada yang saling mencuri potongan
+ * (perbaikan dari versi antrean-konsumsi yang bikin gema/patah).
  */
 public class AudioStreamer {
 
@@ -23,9 +29,20 @@ public class AudioStreamer {
     private volatile boolean running = false;
     private Thread readThread;
 
+    private static class Chunk {
+        final long seq;
+        final byte[] data;
+
+        Chunk(long seq, byte[] data) {
+            this.seq = seq;
+            this.data = data;
+        }
+    }
+
     private final Object bufLock = new Object();
-    private final Deque<byte[]> chunks = new ArrayDeque<>();
-    private static final int MAX_CHUNKS = 120; // ~2,5 dtk @16k mono (chunk ~20ms)
+    private final Deque<Chunk> chunks = new ArrayDeque<>();
+    private long seqCounter = 0;
+    private static final int MAX_CHUNKS = 150; // ~3 dtk @16k mono (chunk 20ms)
 
     public synchronized void start() throws Exception {
         if (running) return;
@@ -56,7 +73,7 @@ public class AudioStreamer {
                     byte[] copy = new byte[n];
                     System.arraycopy(buf, 0, copy, 0, n);
                     synchronized (bufLock) {
-                        chunks.addLast(copy);
+                        chunks.addLast(new Chunk(seqCounter++, copy));
                         while (chunks.size() > MAX_CHUNKS) chunks.removeFirst();
                         bufLock.notifyAll();
                     }
@@ -75,7 +92,6 @@ public class AudioStreamer {
     public static void writeWavHeader(OutputStream os) throws Exception {
         int dataLen = 0x7FFFF000;
         byte[] h = new byte[44];
-        // RIFF
         h[0] = 'R'; h[1] = 'I'; h[2] = 'F'; h[3] = 'F';
         putInt(h, 4, 36 + dataLen);
         h[8] = 'W'; h[9] = 'A'; h[10] = 'V'; h[11] = 'E';
@@ -105,23 +121,44 @@ public class AudioStreamer {
         b[off + 1] = (byte) ((v >> 8) & 0xFF);
     }
 
-    /** Kirim chunk PCM ke satu klien sampai berhenti. */
+    /**
+     * Ambil semua chunk yang lebih baru dari lastSeq (tunggu bila kosong).
+     * Klien lambat yang tertinggal >1,2 dtk langsung dilompatkan ke terbaru.
+     */
+    private List<Chunk> takeSince(long lastSeq) {
+        synchronized (bufLock) {
+            if (chunks.isEmpty() && running) {
+                try {
+                    bufLock.wait(500);
+                } catch (InterruptedException ignored) {
+                }
+            }
+            List<Chunk> out = new ArrayList<>();
+            for (Chunk c : chunks) {
+                if (c.seq > lastSeq) out.add(c);
+            }
+            // Tertinggal jauh: buang tumpukan, lompat ke terbaru.
+            if (out.size() > 60 && !out.isEmpty()) {
+                Chunk newest = out.get(out.size() - 1);
+                out.clear();
+                out.add(newest);
+            }
+            return out;
+        }
+    }
+
+    /** Kirim aliran ke satu klien sampai berhenti. Kursor milik sendiri. */
     public void serveClient(OutputStream os) {
         try {
             writeWavHeader(os);
+            long lastSeq = -1;
             while (running) {
-                byte[] chunk;
-                synchronized (bufLock) {
-                    while (running && chunks.isEmpty()) {
-                        try {
-                            bufLock.wait(500);
-                        } catch (InterruptedException ignored) {
-                        }
-                    }
-                    if (!running) return;
-                    chunk = chunks.removeFirst();
+                List<Chunk> batch = takeSince(lastSeq);
+                if (batch.isEmpty()) continue;
+                for (Chunk c : batch) {
+                    os.write(c.data);
+                    lastSeq = c.seq;
                 }
-                os.write(chunk);
                 os.flush();
             }
         } catch (Exception e) {
