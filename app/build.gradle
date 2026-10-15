@@ -1,0 +1,32 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.tcv"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.tcv"
+        minSdk 24
+        // Target 28 disengaja: pola startService dari BroadcastReceiver
+        // + legacy external storage, sama seperti pola Termux:API yang terbukti jalan.
+        targetSdk 28
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+// Sengaja tanpa dependencies eksternal: semua pakai framework Android saja,
+// supaya build cepat dan kecil kemungkinan gagal.
+dependencies {
+}
