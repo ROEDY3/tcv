@@ -106,7 +106,25 @@ public class MediaFiles {
         try {
             ContentResolver cr = context.getContentResolver();
             Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-            deleteByName(cr, collection, STATUS_NAME);
+
+            // Hapus SEMUA baris lama bernama tcv_status* satu per satu via Uri
+            // (pola delete-by-where terbukti tidak mempan di sebagian HP).
+            try (android.database.Cursor c = cr.query(collection,
+                    new String[]{MediaStore.MediaColumns._ID},
+                    MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?",
+                    new String[]{"tcv_status%"}, null)) {
+                if (c != null) {
+                    while (c.moveToNext()) {
+                        long id = c.getLong(0);
+                        try {
+                            cr.delete(android.content.ContentUris.withAppendedId(collection, id),
+                                    null, null);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
 
             ContentValues v = new ContentValues();
             v.put(MediaStore.MediaColumns.DISPLAY_NAME, STATUS_NAME);
