@@ -7,12 +7,17 @@ import android.util.Log;
 
 import java.io.OutputStream;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 
 /**
  * Mic HP -> aliran PCM untuk OBS, via endpoint HTTP /audio.wav.
- * Format: WAV 16 kHz mono 16-bit dengan header "tak berujung"
- * (ffmpeg/OBS membacanya sebagai stream live).
+ * Format: WAV 16 kHz mono 16-bit dengan header "tak berujung".
+ *
+ * 1) Per-klien (masing-masing punya kursor).
+ * 2) Ring kecil, bukan antrean 3 dtk (biar tidak telat).
+ * 3) Klien baru mulai dari chunk BERIKUTNYA, bukan dari yang sudah lewat.
  */
 public class AudioStreamer {
 
@@ -20,12 +25,24 @@ public class AudioStreamer {
     public static final int SAMPLE_RATE = 16000;
 
     private AudioRecord recorder;
+    private android.media.audiofx.AcousticEchoCanceler aec;
     private volatile boolean running = false;
     private Thread readThread;
 
+    private static class Chunk {
+        final long seq;
+        final byte[] data;
+
+        Chunk(long seq, byte[] data) {
+            this.seq = seq;
+            this.data = data;
+        }
+    }
+
     private final Object bufLock = new Object();
-    private final Deque<byte[]> chunks = new ArrayDeque<>();
-    private static final int MAX_CHUNKS = 120; // ~2,5 dtk @16k mono (chunk ~20ms)
+    private final Deque<Chunk> chunks = new ArrayDeque<>();
+    private volatile long seqCounter = 0;
+    private static final int MAX_CHUNKS = 4; // ~80ms @16k mono (mimpi d chunks)
 
     public synchronized void start() throws Exception {
         if (running) return;
@@ -40,16 +57,20 @@ public class AudioStreamer {
             recorder = null;
             throw new Exception("AudioRecord init gagal (mic dipakai app lain?)");
         }
-        android.media.audiofx.AcousticEchoCanceler aec = android.media.audiofx.AcousticEchoCanceler.create(recorder.getAudioSessionId());
+        aec = android.media.audiofx.AcousticEchoCanceler.create(recorder.getAudioSessionId());
         if (aec != null) {
             aec.setEnabled(true);
             Log.i(TAG, "AEC enabled");
+        }
+        synchronized (bufLock) {
+            seqCounter = 0;
+            chunks.clear();
         }
         recorder.startRecording();
         running = true;
         readThread = new Thread(this::readLoop, "TCVAudio");
         readThread.start();
-        Log.i(TAG, "AudioStreamer on 16kHz mono");
+        Log.i(TAG, "AudioStreamer on 16kHz mono raw (ring kecil)");
     }
 
     private void readLoop() {
@@ -61,7 +82,8 @@ public class AudioStreamer {
                     byte[] copy = new byte[n];
                     System.arraycopy(buf, 0, copy, 0, n);
                     synchronized (bufLock) {
-                        chunks.addLast(copy);
+                        long id = seqCounter++;
+                        chunks.addLast(new Chunk(id, copy));
                         while (chunks.size() > MAX_CHUNKS) chunks.removeFirst();
                         bufLock.notifyAll();
                     }
@@ -76,11 +98,37 @@ public class AudioStreamer {
         }
     }
 
-    /** Tulis header WAV "live" (ukuran data dibuat raksasa). */
+    public long currentSeq() {
+        synchronized (bufLock) {
+            return seqCounter;
+        }
+    }
+
+    private List<Chunk> takeSince(long lastSeq) {
+        synchronized (bufLock) {
+            if (chunks.isEmpty() && running) {
+                try {
+                    bufLock.wait(100);
+                } catch (InterruptedException ignored) {}
+            }
+            List<Chunk> out = new ArrayList<>();
+            for (Chunk c : chunks) {
+                if (c.seq > lastSeq) out.add(c);
+            }
+            // Klien tertinggal: buang tumpukan, ikuti terbaru.
+            if (out.size() > 3 && !out.isEmpty()) {
+                Chunk newest = out.get(out.size() - 1);
+                out.clear();
+                out.add(newest);
+            }
+            return out;
+        }
+    }
+
+    /** Header WAV "live". */
     public static void writeWavHeader(OutputStream os) throws Exception {
         int dataLen = 0x7FFFF000;
         byte[] h = new byte[44];
-        // RIFF
         h[0] = 'R'; h[1] = 'I'; h[2] = 'F'; h[3] = 'F';
         putInt(h, 4, 36 + dataLen);
         h[8] = 'W'; h[9] = 'A'; h[10] = 'V'; h[11] = 'E';
@@ -110,23 +158,20 @@ public class AudioStreamer {
         b[off + 1] = (byte) ((v >> 8) & 0xFF);
     }
 
-    /** Kirim chunk PCM ke satu klien sampai berhenti. */
+    /**
+     * Kirim ke satu klien. Mulai dari chunk yang AKAN datang setelah konek.
+     */
     public void serveClient(OutputStream os) {
         try {
             writeWavHeader(os);
+            long lastSeq = currentSeq();
             while (running) {
-                byte[] chunk;
-                synchronized (bufLock) {
-                    while (running && chunks.isEmpty()) {
-                        try {
-                            bufLock.wait(500);
-                        } catch (InterruptedException ignored) {
-                        }
-                    }
-                    if (!running) return;
-                    chunk = chunks.removeFirst();
+                List<Chunk> batch = takeSince(lastSeq);
+                if (batch.isEmpty()) continue;
+                for (Chunk c : batch) {
+                    os.write(c.data);
+                    lastSeq = c.seq;
                 }
-                os.write(chunk);
                 os.flush();
             }
         } catch (Exception e) {
@@ -140,15 +185,13 @@ public class AudioStreamer {
             bufLock.notifyAll();
             chunks.clear();
         }
+        if (aec != null) {
+            try { aec.release(); } catch (Exception ignored) {}
+            aec = null;
+        }
         if (recorder != null) {
-            try {
-                recorder.stop();
-            } catch (Exception ignored) {
-            }
-            try {
-                recorder.release();
-            } catch (Exception ignored) {
-            }
+            try { recorder.stop(); } catch (Exception ignored) {}
+            try { recorder.release(); } catch (Exception ignored) {}
             recorder = null;
         }
         readThread = null;
