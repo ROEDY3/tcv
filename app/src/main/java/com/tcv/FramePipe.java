@@ -90,11 +90,14 @@ public class FramePipe {
             sockFile.delete(); // sisa sesi mati sebelumnya
         }
         // Soket FILESYSTEM tidak punya konstruktor langsung:
-        // bind manual -> listen -> bungkus fd jadi LocalServerSocket.
-        LocalSocket bound = new LocalSocket();
-        bound.bind(new LocalSocketAddress(socketPath(), LocalSocketAddress.Namespace.FILESYSTEM));
-        bound.listen(4);
-        server = new LocalServerSocket(bound.getFileDescriptor());
+        // bikin manual via android.system.Os -> listen -> bungkus fd.
+        java.io.FileDescriptor rawFd = android.system.Os.socket(
+                android.system.OsConstants.AF_UNIX,
+                android.system.OsConstants.SOCK_STREAM, 0);
+        android.system.Os.bind(rawFd,
+                android.system.UnixSocketAddress.createFileSystem(socketPath()));
+        android.system.Os.listen(rawFd, 4);
+        server = new LocalServerSocket(rawFd);
         running = true;
         serverThread = new Thread(this::acceptLoop, "TCVFrames");
         serverThread.start();
