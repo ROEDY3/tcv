@@ -81,6 +81,7 @@ public class CamVideoService extends Service {
     private static int streamH = 480;
     private static int streamFps = 10;
     private static int streamPort = 8090;
+    private static String streamCamId = "0";
 
     @Override
     public void onCreate() {
@@ -239,6 +240,13 @@ public class CamVideoService extends Service {
         recBitrate = intent.getIntExtra("bitrate", 10_000_000);
         recFps = intent.getIntExtra("fps", 30);
 
+        // Satu kamera satu pemegang: tolak bila stream jalan di kamera lain.
+        if (streamOn && !recCameraId.equals(streamCamId)) {
+            StatusFile.write(context, "", "Stream sedang jalan di kamera id " + streamCamId
+                    + ". samakan kamera (-c " + streamCamId + ") atau matikan stream (-S) dulu.");
+            return;
+        }
+
         wantRecord = true;
         openRetryCount = 0;
         sessionGen++;
@@ -262,6 +270,16 @@ public class CamVideoService extends Service {
         if (streamFps <= 0 || streamFps > 30) streamFps = 10;
         streamPort = intent.getIntExtra("sport", 8090);
         if (streamPort < 1024 || streamPort > 65535) streamPort = 8090;
+        streamCamId = intent.getStringExtra("camera");
+        if (streamCamId == null) streamCamId = "0";
+
+        // Satu kamera satu pemegang: tolak bila rekaman jalan di kamera lain.
+        if ((isRecording || isAttemptInFlight) && !streamCamId.equals(recCameraId)) {
+            StatusFile.write(context, "", "Kamera id " + recCameraId
+                    + " sedang dipakai merekam. samakan kamera (-s -c " + recCameraId
+                    + ") atau quit dulu.");
+            return;
+        }
 
         try {
             // Bersihkan sisa pipa lama dulu (kalau ada yang nyangkut),
@@ -291,7 +309,7 @@ public class CamVideoService extends Service {
     }
 
     private String streamCameraId() {
-        return (wantRecord ? recCameraId : "0");
+        return (wantRecord ? recCameraId : streamCamId);
     }
 
     private void wantStreamOff() {

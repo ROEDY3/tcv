@@ -39,6 +39,10 @@ class TcvCamera:
     def isOpened(self):
         return self._opened
 
+    def set(self, prop, value):
+        """No-op gaya cv2 (mis. CAP_PROP_BUFFERSIZE): selalu True."""
+        return True
+
     def _recvn(self, n):
         buf = b""
         while len(buf) < n:

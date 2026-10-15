@@ -28,7 +28,7 @@ show_usage () {
     echo "-b <bitrate> Start recording w/ specified video bitrate (in kbps)"
     echo "-r <fps>     Start recording w/ specified frame rate"
     echo "-n           Start recording w/o audio"
-    echo "-s           Start frame stream (127.0.0.1:8090, for Python)"
+    echo "-s           Start frame stream (boleh + -c <id>)"
     echo "-S           Stop frame stream"
     echo "-C           List cameras (id depan/belakang)"
     echo "-i           Get info about current recording"
@@ -77,46 +77,82 @@ do
         h) sole "$@"
            ;;
         f) record=yes
+           recopt=yes
            add_params --es file "$OPTARG"
            ;;
-        c) record=yes
+        c) cam=yes
            add_params --es camera "$OPTARG"
            ;;
         # API takes limit in milliseconds
         l) record=yes
+           recopt=yes
            add_params --ei limit $((OPTARG * 1000))
            ;;
         # API takes bitrate in bps
         b) record=yes
+           recopt=yes
            add_params --ei bitrate $((OPTARG * 1000))
            ;;
         r) record=yes
+           recopt=yes
            add_params --ei fps $((OPTARG))
            ;;
         n) record=yes
+           recopt=yes
            add_params --ez audio false
            ;;
         d) record=yes
            ;;
-        s) sole "$@"
+        s) stream=yes
            add_params -a stream_start
            ;;
-        S) sole "$@"
+        S) sstop=yes
+           sole "$@"
            add_params -a stream_stop
            ;;
-        C) sole "$@"
+        C) cams=yes
+           sole "$@"
            add_params -a cameras
            ;;
-        i) sole "$@"
+        i) info=yes
+           sole "$@"
            add_params -a info
            ;;
-        q) sole "$@"
+        q) quit=yes
+           sole "$@"
            add_params -a quit
            ;;
         *) usage_error
            ;;
     esac
 done
+
+if [ -v stream ]; then
+    # Mode stream: hanya boleh ditemani -c (pilih kamera).
+    if [ -v rec ] || [ -v info ] || [ -v quit ] || [ -v sstop ] || [ -v cams ]; then
+        echo "ERROR: -s tidak bisa digabung perintah lain (-d/-i/-q/-S/-C)!"
+        usage_error
+    fi
+    if [ -v recopt ]; then
+        echo "ERROR: -f/-l/-b/-r/-n hanya untuk merekam, bukan stream!"
+        usage_error
+    fi
+else
+    ncmd=0
+    [ -v rec ] && ncmd=$((ncmd + 1))
+    [ -v info ] && ncmd=$((ncmd + 1))
+    [ -v quit ] && ncmd=$((ncmd + 1))
+    [ -v sstop ] && ncmd=$((ncmd + 1))
+    [ -v cams ] && ncmd=$((ncmd + 1))
+    if [ "$ncmd" -gt 1 ]; then
+        echo "ERROR: satu perintah saja dalam sekali jalan!"
+        usage_error
+    fi
+    # -c sendirian = rekam default di kamera itu (perilaku lama).
+    if [ -v cam ] && [ "$ncmd" -eq 0 ]; then
+        record=yes
+    fi
+fi
 
 if [ -v record ]; then
     add_params -a record
