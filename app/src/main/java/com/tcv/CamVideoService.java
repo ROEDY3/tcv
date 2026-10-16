@@ -441,10 +441,10 @@ public class CamVideoService extends Service {
                 int lo = r.getLower();
                 int hi = r.getUpper();
                 if (hi < targetFps) continue;
-                // Prioritas: hi == target, lo serendah mungkin (batas bawah
-                // lebih fleksibel di cahaya redup), lalu selisih terkecil.
-                int score = Math.abs(hi - targetFps) * 10
-                        + Math.max(0, targetFps - lo);
+                // Prioritas: hi mendekati target, DAN rentang sesempit mungkin
+                // (lo mendekati hi). Rentang lebar membuat kamera mengubah fps
+                // dinamis mengikuti cahaya -> waktu antar-frame goyah (judder).
+                int score = Math.abs(hi - targetFps) * 10 + (hi - lo);
                 if (score < bestScore) {
                     bestScore = score;
                     best = r;

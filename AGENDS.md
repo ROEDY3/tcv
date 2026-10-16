@@ -4,7 +4,7 @@ Dokumen status dan konteks proyek TCV Camera: aplikasi pendamping Android untuk
 merekam kamera HP dari Termux, mengalirkan frame ke Python, dan menyediakan
 sumber video/audio lokal untuk OBS Studio di HP yang sama.
 
-Versi terakhir di repo: **0.6.0 / versionCode 15**.
+Versi terakhir di repo: **0.6.1 / versionCode 16**.
 
 ## Tujuan proyek
 
@@ -123,6 +123,11 @@ Gunakan sumber **Media Source**, bukan V4L2:
      redup.
    - v0.6.0: default stream 24 fps, `JPEG_QUALITY` 80, AE target fps range
      mengikuti target, watchdog sesi, dan fps nyata tampil di `camvideo -i`.
+   - v0.6.1: pemilihan `CONTROL_AE_TARGET_FPS_RANGE` diprioritaskan ke rentang
+     sempit/mendekati tetap supaya kamera tidak mengubah fps dinamis
+     mengikuti cahaya (penyebab judder).
+   - Patah-patah sisi Python juga diperbaiki di `tmp/main.py`: inferensi
+     MediaPipe dipindah ke thread, sumber default TCP mentah, lerp prediktif.
    - Yang belum: ukur fps nyata di HP dan pastikan `fhd` tidak terlalu berat.
 1. **Audio masih terasa telat dibanding video.**
    - Penyebab yang sudah diperbaiki: antrean audio lama sekitar 3 detik dan
