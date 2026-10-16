@@ -71,6 +71,11 @@ public class MjpegHttpServer {
     private void serve(Socket client) {
         try {
             client.setSoTimeout(10000);
+            try {
+                client.setTcpNoDelay(true);
+                client.setSendBufferSize(1 << 18);
+            } catch (Exception ignored) {
+            }
             BufferedReader in = new BufferedReader(
                     new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII));
             OutputStream os = client.getOutputStream();

@@ -26,9 +26,10 @@ show_usage () {
     echo "-c <id>      Start recording using specified camera id"
     echo "-l <limit>   Start recording w/ specified duration limit (in seconds, unlimited for 0)"
     echo "-b <bitrate> Start recording w/ specified video bitrate (in kbps)"
-    echo "-r <fps>     Start recording w/ specified frame rate"
+    echo "-p <fps>     Start recording w/ specified frame rate"
     echo "-n           Start recording w/o audio"
-    echo "-s           Start stream (Python TCP + OBS http://127.0.0.1:8091/mjpeg + mic /audio.wav; boleh + -c <id>)"
+    echo "-s           Start stream (Python TCP + OBS http://127.0.0.1:8091/mjpeg + mic /audio.wav; boleh + -c <id> + -r <preset>)"
+    echo "-r <preset>  Stream resolution preset (only with -s): 4:3|1:1|16:9|hd|9:16|fhd (default 4:3)"
     echo "-S           Stop stream"
     echo "-C           List cameras (id depan/belakang)"
     echo "-i           Get info about current recording"
@@ -60,6 +61,22 @@ call_api () {
     am broadcast --receiver-foreground -n "$RECEIVER" "$@"
 }
 
+add_stream_ratio () {
+    # Petakan preset rasio ke ukuran yang diminta; aplikasi menyesuaikan
+    # ke ukuran JPEG yang benar-benar didukung kamera.
+    case "$1" in
+        4:3)      add_params --ei sw 640  --ei sh 480 ;;
+        1:1)      add_params --ei sw 640  --ei sh 640 ;;
+        16:9|hd)  add_params --ei sw 1280 --ei sh 720 ;;
+        9:16)     add_params --ei sw 720  --ei sh 1280 ;;
+        fhd)      add_params --ei sw 1920 --ei sh 1080 ;;
+        *)
+            echo "ERROR: preset rasio '$1' tidak dikenal (pakai: 4:3|1:1|16:9|hd|9:16|fhd)!"
+            usage_error
+            ;;
+    esac
+}
+
 show_status () {
     # beri waktu service menulis status
     sleep 2
@@ -71,7 +88,7 @@ show_status () {
     fi
 }
 
-while getopts h,f:,c:,l:,b:,r:,n,d,i,q,s,S,C option
+while getopts h,f:,c:,l:,b:,p:,r:,n,d,i,q,s,S,C option
 do
     case "$option" in
         h) sole "$@"
@@ -93,9 +110,12 @@ do
            recopt=yes
            add_params --ei bitrate $((OPTARG * 1000))
            ;;
-        r) record=yes
+        p) record=yes
            recopt=yes
            add_params --ei fps $((OPTARG))
+           ;;
+        r) ratio="$OPTARG"
+           ratioopt=yes
            ;;
         n) record=yes
            recopt=yes
@@ -134,10 +154,17 @@ if [ -v stream ]; then
         usage_error
     fi
     if [ -v recopt ]; then
-        echo "ERROR: -f/-l/-b/-r/-n hanya untuk merekam, bukan stream!"
+        echo "ERROR: -f/-l/-b/-p/-n hanya untuk merekam, bukan stream!"
         usage_error
     fi
+    if [ -v ratio ]; then
+        add_stream_ratio "$ratio"
+    fi
 else
+    if [ -v ratio ]; then
+        echo "ERROR: -r (preset rasio) hanya untuk stream, pakai bersama -s!"
+        usage_error
+    fi
     ncmd=0
     [ -v rec ] && ncmd=$((ncmd + 1))
     [ -v info ] && ncmd=$((ncmd + 1))

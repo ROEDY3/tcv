@@ -7,6 +7,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.graphics.ImageFormat;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
@@ -20,7 +21,9 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.util.Log;
+import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
 import android.view.WindowManager;
@@ -82,9 +85,18 @@ public class CamVideoService extends Service {
 
     private static int streamW = 640;
     private static int streamH = 480;
-    private static int streamFps = 10;
+    private static int streamFps = 24;
+    private static int streamQuality = 80;
     private static int streamPort = 8090;
     private static String streamCamId = "0";
+
+    // Watchdog: bangun ulang sesi bila pipa frame berhenti bertambah.
+    private static final long STREAM_STALL_MS = 4000;
+    private static final long WATCHDOG_PERIOD_MS = 2000;
+    private static int lastWatchdogFrameId = -1;
+    private static long lastWatchdogChangeElapsed = 0;
+    private static boolean watchdogScheduled = false;
+    private static int watchdogRebuilds = 0;
 
     @Override
     public void onCreate() {
@@ -94,11 +106,12 @@ public class CamVideoService extends Service {
 
     @Override
     public void onDestroy() {
+        streamOn = false;
+        stopWatchdog();
         stopPipe();
         stopHttpAudio();
         cleanupRecording();
         serviceAlive = false;
-        streamOn = false;
         super.onDestroy();
     }
 
@@ -206,6 +219,9 @@ public class CamVideoService extends Service {
         if (pipe != null) {
             sb.append("tcp=127.0.0.1:").append(pipe.getPort())
                     .append(" ").append(pipe.getWidth()).append("x").append(pipe.getHeight())
+                    .append(" target=").append(streamFps).append("fps")
+                    .append(" nyata=").append(String.format(java.util.Locale.US, "%.1f", pipe.getMeasuredFps()))
+                    .append("fps q=").append(streamQuality)
                     .append(" penonton=").append(pipe.getViewers());
         }
         if (httpServer != null && httpServer.isRunning()) {
@@ -280,10 +296,12 @@ public class CamVideoService extends Service {
         }
         streamW = intent.getIntExtra("sw", 640);
         streamH = intent.getIntExtra("sh", 480);
-        streamFps = intent.getIntExtra("sfps", 10);
+        streamFps = intent.getIntExtra("sfps", 24);
+        streamQuality = intent.getIntExtra("squality", 80);
         if (streamW <= 0 || streamW > 1920) streamW = 640;
         if (streamH <= 0 || streamH > 1080) streamH = 480;
-        if (streamFps <= 0 || streamFps > 30) streamFps = 10;
+        if (streamFps <= 0 || streamFps > 60) streamFps = 24;
+        if (streamQuality < 10 || streamQuality > 100) streamQuality = 80;
         streamPort = intent.getIntExtra("sport", 8090);
         if (streamPort < 1024 || streamPort > 65535) streamPort = 8090;
         streamCamId = intent.getStringExtra("camera");
@@ -295,6 +313,14 @@ public class CamVideoService extends Service {
                     + " sedang dipakai merekam. samakan kamera (-s -c " + recCameraId
                     + ") atau quit dulu.");
             return;
+        }
+
+        // Rasio yang diminta (mis. 1:1/16:9) dipetakan ke ukuran JPEG yang
+        // benar-benar didukung kamera ini; kalau tak ada yang pas, ambil terdekat.
+        Size resolved = resolveStreamSize(context, streamCamId, streamW, streamH);
+        if (resolved != null) {
+            streamW = resolved.getWidth();
+            streamH = resolved.getHeight();
         }
 
         try {
@@ -337,7 +363,157 @@ public class CamVideoService extends Service {
             openRetryCount = 0;
             attemptOpenCamera(context, streamCameraId(), myGen);
         }
+        startWatchdog();
+        StatusFile.write(context, "Stream jalan: 127.0.0.1:" + streamPort
+                + " (" + streamW + "x" + streamH + " @" + streamFps + "fps"
+                + ", q" + streamQuality + ")", null);
         goForeground(statusLine());
+    }
+
+    // ---------------- RESOLUSI & FPS (pemetaan ke kamera) ----------------
+
+    /**
+     * Pilih ukuran JPEG terbesar yang rasionya cocok dengan permintaan,
+     * dibatasi agar fps tetap aman. Bila tak ada yang cocok rasio,
+     * kembalikan ukuran terdekat (jarak area + rasio).
+     */
+    private Size resolveStreamSize(Context context, String cameraId, int reqW, int reqH) {
+        try {
+            CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
+            CameraCharacteristics c = manager.getCameraCharacteristics(cameraId);
+            android.hardware.camera2.params.StreamConfigurationMap map =
+                    c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (map == null) return null;
+            Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
+            if (sizes == null || sizes.length == 0) return null;
+
+            double reqRatio = (double) reqW / reqH;
+            long reqArea = (long) reqW * reqH;
+            // Batas area: fhd sebagai plafon supaya tetap ringan.
+            long areaCap = Math.min(reqArea, (long) 1920 * 1080);
+
+            // Tiga tingkat: (1) rasio cocok & di bawah plafon area (terbesar),
+            // (2) rasio cocok walau lebih besar, (3) ukuran terdekat apa pun.
+            Size matchUnderCap = null;
+            long matchUnderCapArea = -1;
+            Size matchAny = null;
+            long matchAnyArea = -1;
+            Size nearest = null;
+            double nearestScore = Double.MAX_VALUE;
+            for (Size s : sizes) {
+                long area = (long) s.getWidth() * s.getHeight();
+                double ratio = (double) s.getWidth() / s.getHeight();
+                boolean ratioOk = Math.abs(ratio - reqRatio) < 0.05;
+                if (ratioOk && area <= areaCap * 1.05 && area > matchUnderCapArea) {
+                    matchUnderCapArea = area;
+                    matchUnderCap = s;
+                }
+                if (ratioOk && area > matchAnyArea) {
+                    matchAnyArea = area;
+                    matchAny = s;
+                }
+                double ratioErr = Math.abs(ratio - reqRatio);
+                double areaErr = Math.abs(area - reqArea) / (double) Math.max(reqArea, 1);
+                double score = ratioErr * 4.0 + areaErr;
+                if (score < nearestScore) {
+                    nearestScore = score;
+                    nearest = s;
+                }
+            }
+            if (matchUnderCap != null) return matchUnderCap;
+            if (matchAny != null) return matchAny;
+            return nearest;
+        } catch (Exception e) {
+            Log.i(TAG, "resolveStreamSize: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Range fps AE yang mendekati target, diambil dari daftar yang didukung. */
+    private Range<Integer> chooseAeFpsRange(CameraCharacteristics c, int targetFps) {
+        try {
+            Range<Integer>[] ranges = c.get(
+                    CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+            if (ranges == null || ranges.length == 0) return null;
+            Range<Integer> best = null;
+            int bestScore = Integer.MAX_VALUE;
+            for (Range<Integer> r : ranges) {
+                int lo = r.getLower();
+                int hi = r.getUpper();
+                if (hi < targetFps) continue;
+                // Prioritas: hi == target, lo serendah mungkin (batas bawah
+                // lebih fleksibel di cahaya redup), lalu selisih terkecil.
+                int score = Math.abs(hi - targetFps) * 10
+                        + Math.max(0, targetFps - lo);
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = r;
+                }
+            }
+            if (best == null) {
+                // Tak ada yang mencapai target: ambil hi tertinggi.
+                for (Range<Integer> r : ranges) {
+                    if (best == null || r.getUpper() > best.getUpper()) best = r;
+                }
+            }
+            return best;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // ---------------- WATCHDOG STREAM ----------------
+
+    /** Mulai memantau apakah pipa frame benar-benar bertambah. */
+    private void startWatchdog() {
+        synchronized (CamVideoService.class) {
+            if (watchdogScheduled) return;
+            watchdogScheduled = true;
+        }
+        lastWatchdogFrameId = -1;
+        lastWatchdogChangeElapsed = SystemClock.elapsedRealtime();
+        bgHandler().postDelayed(this::watchdogTick, WATCHDOG_PERIOD_MS);
+    }
+
+    private void stopWatchdog() {
+        synchronized (CamVideoService.class) {
+            watchdogScheduled = false;
+        }
+    }
+
+    private void watchdogTick() {
+        if (!streamOn || pipe == null || !pipe.isRunning()) {
+            stopWatchdog();
+            return;
+        }
+        int id = pipe.getFrameId();
+        long now = SystemClock.elapsedRealtime();
+        if (id != lastWatchdogFrameId) {
+            lastWatchdogFrameId = id;
+            lastWatchdogChangeElapsed = now;
+            watchdogRebuilds = 0;
+        } else if (now - lastWatchdogChangeElapsed > STREAM_STALL_MS) {
+            lastWatchdogChangeElapsed = now;
+            watchdogRebuilds++;
+            if (watchdogRebuilds <= 2) {
+                Log.i(TAG, "watchdog: stream macet (frame id " + id + "), bangun ulang sesi ("
+                        + watchdogRebuilds + ")");
+                isAttemptInFlight = true;
+                sessionGen++;
+                buildSession(sessionGen, nextAttempt());
+            } else {
+                // Sesi dibangun ulang tetap macet: kamera kemungkinan
+                // tersangkut, jadi buka ulang device sepenuhnya.
+                Log.i(TAG, "watchdog: tetap macet, buka ulang kamera");
+                watchdogRebuilds = 0;
+                releaseCameraIfIdleForce();
+                isAttemptInFlight = true;
+                openRetryCount = 0;
+                sessionGen++;
+                attemptOpenCamera(getApplicationContext(), streamCameraId(), sessionGen);
+            }
+        }
+        bgHandler().postDelayed(this::watchdogTick, WATCHDOG_PERIOD_MS);
     }
 
     private String streamCameraId() {
@@ -346,6 +522,7 @@ public class CamVideoService extends Service {
 
     private void wantStreamOff() {
         streamOn = false;
+        stopWatchdog();
         stopPipe();
         stopHttpAudio();
     }
@@ -598,10 +775,27 @@ public class CamVideoService extends Service {
                     for (Surface s : surfaces) req.addTarget(s);
                     req.set(CaptureRequest.CONTROL_AF_MODE,
                             CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+                    req.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
                     // Frame JPEG stream ikut tegak mengikuti posisi HP.
                     req.set(CaptureRequest.JPEG_ORIENTATION,
                             orientationHint(getApplicationContext(),
                                     wantRecord ? recCameraId : streamCameraId()));
+                    // Kualitas JPEG + range fps AE: JPEG lebih ringan dan
+                    // kamera tidak menjatuhkan fps di kondisi minim cahaya.
+                    if (streamOn) {
+                        req.set(CaptureRequest.JPEG_QUALITY, streamQuality);
+                        try {
+                            CameraManager cm = (CameraManager) getApplicationContext()
+                                    .getSystemService(Context.CAMERA_SERVICE);
+                            CameraCharacteristics ch = cm.getCameraCharacteristics(
+                                    wantRecord ? recCameraId : streamCameraId());
+                            Range<Integer> fpsRange = chooseAeFpsRange(ch, streamFps);
+                            if (fpsRange != null) {
+                                req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
                     session.setRepeatingRequest(req.build(), null, bgHandler());
 
                         Context context = getApplicationContext();
@@ -664,6 +858,18 @@ public class CamVideoService extends Service {
             cameraDevice = null;
         }
         Log.i(TAG, "kamera dilepas (menganggur)");
+    }
+
+    /** Lepas kamera walau stream masih aktif (dipakai watchdog saat macet). */
+    private void releaseCameraIfIdleForce() {
+        if (captureSession != null) {
+            try { captureSession.close(); } catch (RuntimeException ignored) {}
+            captureSession = null;
+        }
+        if (cameraDevice != null) {
+            try { cameraDevice.close(); } catch (RuntimeException ignored) {}
+            cameraDevice = null;
+        }
     }
 
     /** Gagal total: hapus file setengah-jadi supaya nama bisa dipakai ulang. */

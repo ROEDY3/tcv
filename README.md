@@ -43,11 +43,18 @@ aplikasi Termux / Termux:API apa pun.
 camvideo -h                 # bantuan
 camvideo -d                 # rekam dengan default
 camvideo -d -l 5 -f a.mp4   # rekam 5 detik ke Movies/a.mp4
+camvideo -d -p 30           # rekam pada 30 fps
 camvideo -c 1 -d            # pakai kamera id 1
 camvideo -n -d              # tanpa audio
 camvideo -i                 # status rekaman
 camvideo -q                 # berhenti merekam (layanan tetap siaga)
+camvideo -s                 # stream untuk OBS/Python (640x480 @ 24 fps)
+camvideo -s -r hd           # stream rasio 16:9 (preset: 4:3, 1:1, 16:9, 9:16, fhd)
+camvideo -S                 # matikan stream
 ```
+
+Opsi fps rekaman memakai `-p <fps>` (sebelumnya `-r`). Opsi `-r <preset>`
+sekarang khusus stream untuk memilih rasio.
 
 ## Build sendiri
 

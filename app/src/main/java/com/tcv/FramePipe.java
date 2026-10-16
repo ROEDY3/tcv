@@ -3,6 +3,7 @@ package com.tcv;
 import android.media.Image;
 import android.media.ImageReader;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 
@@ -36,17 +37,22 @@ public class FramePipe {
     private final Object frameLock = new Object();
     private byte[] latestJpeg = null;
     private int frameId = 0;
-    private long lastPushMs = 0;
+    private long lastPushElapsed = 0;
+
+    // Pengukuran fps nyata (frame yang benar-benar di-push ke konsumen).
+    private long fpsWindowStart = 0;
+    private int fpsWindowCount = 0;
+    private volatile double measuredFps = 0.0;
 
     private volatile int viewers = 0;
     private volatile int width;
     private volatile int height;
     private volatile int port;
 
-    private long minIntervalMs = 100; // ~10 fps default
+    private volatile long minIntervalMs = 1000 / 24; // ~24 fps default
 
     public void setTargetFps(int fps) {
-        if (fps > 0 && fps <= 30) minIntervalMs = 1000 / fps;
+        if (fps > 0 && fps <= 60) minIntervalMs = 1000 / fps;
     }
 
     public synchronized void start(int port, int w, int h, Handler bgHandler) throws Exception {
@@ -60,15 +66,23 @@ public class FramePipe {
             try {
                 img = reader.acquireLatestImage();
                 if (img == null) return;
-                long now = System.currentTimeMillis();
-                if (now - lastPushMs < minIntervalMs) return;
-                lastPushMs = now;
+                long now = SystemClock.elapsedRealtime();
+                if (now - lastPushElapsed < minIntervalMs) return;
+                lastPushElapsed = now;
                 ByteBuffer buf = img.getPlanes()[0].getBuffer();
                 byte[] data = new byte[buf.remaining()];
                 buf.get(data);
                 synchronized (frameLock) {
                     latestJpeg = data;
                     frameId++;
+                    if (fpsWindowStart == 0) fpsWindowStart = now;
+                    fpsWindowCount++;
+                    long span = now - fpsWindowStart;
+                    if (span >= 1000) {
+                        measuredFps = fpsWindowCount * 1000.0 / span;
+                        fpsWindowStart = now;
+                        fpsWindowCount = 0;
+                    }
                     frameLock.notifyAll();
                 }
             } catch (Exception e) {
@@ -107,6 +121,18 @@ public class FramePipe {
         return port;
     }
 
+    /** Id frame terakhir yang di-push (untuk watchdog: mendeteksi stream macet). */
+    public int getFrameId() {
+        synchronized (frameLock) {
+            return frameId;
+        }
+    }
+
+    /** Fps nyata frame yang benar-benar dikirim ke konsumen. */
+    public double getMeasuredFps() {
+        return measuredFps;
+    }
+
     /** Satu frame + id-nya, untuk konsumen HTTP. */
     public static class Frame {
         public final int id;
@@ -123,10 +149,10 @@ public class FramePipe {
      * Kembalikan null bila timeout/berhenti. Dipakai soket TCP dan HTTP.
      */
     public Frame awaitFrame(int lastSeen, long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         synchronized (frameLock) {
             while (running && frameId == lastSeen) {
-                long wait = deadline - System.currentTimeMillis();
+                long wait = deadline - SystemClock.elapsedRealtime();
                 if (wait <= 0) return null;
                 try {
                     frameLock.wait(Math.min(wait, 500));
@@ -157,6 +183,11 @@ public class FramePipe {
     private void serveClient(Socket client) {
         try {
             client.setSoTimeout(5000);
+            try {
+                client.setTcpNoDelay(true);
+                client.setSendBufferSize(1 << 18);
+            } catch (Exception ignored) {
+            }
             OutputStream os = client.getOutputStream();
             InputStream is = client.getInputStream();
             int lastSeen = -1;
