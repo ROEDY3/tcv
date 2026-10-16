@@ -783,7 +783,7 @@ public class CamVideoService extends Service {
                     // Kualitas JPEG + range fps AE: JPEG lebih ringan dan
                     // kamera tidak menjatuhkan fps di kondisi minim cahaya.
                     if (streamOn) {
-                        req.set(CaptureRequest.JPEG_QUALITY, streamQuality);
+                        req.set(CaptureRequest.JPEG_QUALITY, (byte) streamQuality);
                         try {
                             CameraManager cm = (CameraManager) getApplicationContext()
                                     .getSystemService(Context.CAMERA_SERVICE);
