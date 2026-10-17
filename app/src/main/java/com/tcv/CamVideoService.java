@@ -61,6 +61,7 @@ public class CamVideoService extends Service {
     private static ParcelFileDescriptor videoPfd;
     private static Uri videoUri;
     private static FramePipe pipe;
+    private static RawYuvPipe yuvPipe;
     private static AudioStreamer audioStreamer;
     private static MjpegHttpServer httpServer;
     private static final int HTTP_PORT = 8091;
@@ -90,10 +91,18 @@ public class CamVideoService extends Service {
     private static int streamPort = 8090;
     private static String streamCamId = "0";
 
+    // Jalur Raw YUV mentah (NV12) untuk plugin OBS — tanpa encode, sangat hemat.
+    private static boolean yuvOn = false;
+    private static int yuvW = 640;
+    private static int yuvH = 480;
+    private static int yuvFps = 24;
+    private static int yuvPort = 8092;
+    private static String yuvCamId = "0";
+
     // Watchdog: bangun ulang sesi bila pipa frame berhenti bertambah.
     private static final long STREAM_STALL_MS = 4000;
     private static final long WATCHDOG_PERIOD_MS = 2000;
-    private static int lastWatchdogFrameId = -1;
+    private static long lastWatchdogFrameId = -1;
     private static long lastWatchdogChangeElapsed = 0;
     private static boolean watchdogScheduled = false;
     private static int watchdogRebuilds = 0;
@@ -107,8 +116,10 @@ public class CamVideoService extends Service {
     @Override
     public void onDestroy() {
         streamOn = false;
+        yuvOn = false;
         stopWatchdog();
         stopPipe();
+        stopYuvPipe();
         stopHttpAudio();
         cleanupRecording();
         serviceAlive = false;
@@ -138,6 +149,7 @@ public class CamVideoService extends Service {
                 isAttemptInFlight = false;
                 wantRecord = false;
                 wantStreamOff();
+                wantYuvOff();
                 cleanupRecording();
                 releaseCameraIfIdle();
                 StatusFile.write(context, "Layanan TCV dimatikan.", null);
@@ -150,7 +162,7 @@ public class CamVideoService extends Service {
                 StatusFile.writeInfo(context, isRecording,
                         isRecording && currentShellPath != null
                                 ? currentShellPath + elapsedExtra() : null,
-                        streamOn, streamInfo());
+                        streamOn || yuvOn, streamInfo());
                 break;
             case "quit":
                 sessionGen++;
@@ -171,6 +183,15 @@ public class CamVideoService extends Service {
                 wantStreamOff();
                 rebuildOrRelease();
                 StatusFile.write(context, "Stream dimatikan.", null);
+                goForeground(statusLine());
+                break;
+            case "yuv_start":
+                handleYuvStart(context, intent);
+                break;
+            case "yuv_stop":
+                wantYuvOff();
+                rebuildOrRelease();
+                StatusFile.write(context, "Raw YUV dimatikan.", null);
                 goForeground(statusLine());
                 break;
             case "cameras":
@@ -207,14 +228,14 @@ public class CamVideoService extends Service {
     }
 
     private String statusLine() {
-        if (isRecording && streamOn) return "Merekam + streaming...";
+        if (isRecording && (streamOn || yuvOn)) return "Merekam + streaming...";
         if (isRecording) return "Merekam...";
-        if (streamOn) return "Streaming...";
+        if (streamOn || yuvOn) return "Streaming...";
         return "Siaga — siap menerima perintah camvideo";
     }
 
     private String streamInfo() {
-        if (!streamOn) return null;
+        if (!streamOn && !yuvOn) return null;
         StringBuilder sb = new StringBuilder();
         if (pipe != null) {
             sb.append("tcp=127.0.0.1:").append(pipe.getPort())
@@ -223,6 +244,14 @@ public class CamVideoService extends Service {
                     .append(" nyata=").append(String.format(java.util.Locale.US, "%.1f", pipe.getMeasuredFps()))
                     .append("fps q=").append(streamQuality)
                     .append(" penonton=").append(pipe.getViewers());
+        }
+        if (yuvPipe != null) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append("yuv=127.0.0.1:").append(yuvPipe.getPort())
+                    .append(" ").append(yuvPipe.getWidth()).append("x").append(yuvPipe.getHeight())
+                    .append(" target=").append(yuvFps).append("fps")
+                    .append(" nyata=").append(String.format(java.util.Locale.US, "%.1f", yuvPipe.getMeasuredFps()))
+                    .append("fps penonton=").append(yuvPipe.getViewers());
         }
         if (httpServer != null && httpServer.isRunning()) {
             sb.append(" http=127.0.0.1:").append(httpServer.getPort())
@@ -278,6 +307,11 @@ public class CamVideoService extends Service {
                     + ". samakan kamera (-c " + streamCamId + ") atau matikan stream (-S) dulu.");
             return;
         }
+        if (yuvOn && !recCameraId.equals(yuvCamId)) {
+            StatusFile.write(context, "", "Raw YUV sedang jalan di kamera id " + yuvCamId
+                    + ". samakan kamera (-c " + yuvCamId + ") atau matikan Raw YUV (-N) dulu.");
+            return;
+        }
 
         wantRecord = true;
         openRetryCount = 0;
@@ -312,6 +346,12 @@ public class CamVideoService extends Service {
             StatusFile.write(context, "", "Kamera id " + recCameraId
                     + " sedang dipakai merekam. samakan kamera (-s -c " + recCameraId
                     + ") atau quit dulu.");
+            return;
+        }
+        // Tolak bila Raw YUV jalan di kamera lain.
+        if (yuvOn && !streamCamId.equals(yuvCamId)) {
+            StatusFile.write(context, "", "Raw YUV jalan di kamera id " + yuvCamId
+                    + ". samakan kamera (-s -c " + yuvCamId + ") atau matikan dulu (-N).");
             return;
         }
 
@@ -370,6 +410,71 @@ public class CamVideoService extends Service {
         goForeground(statusLine());
     }
 
+    // ---------------- RAW YUV (NV12) ----------------
+
+    private void handleYuvStart(final Context context, final Intent intent) {
+        if (yuvOn) {
+            StatusFile.write(context, "", "Raw YUV sudah jalan. Matikan dulu (-N) untuk ganti setting.");
+            return;
+        }
+        yuvW = intent.getIntExtra("sw", 640);
+        yuvH = intent.getIntExtra("sh", 480);
+        yuvFps = intent.getIntExtra("sfps", 24);
+        if (yuvW <= 0 || yuvW > 1920) yuvW = 640;
+        if (yuvH <= 0 || yuvH > 1080) yuvH = 480;
+        if (yuvFps <= 0 || yuvFps > 60) yuvFps = 24;
+        yuvPort = intent.getIntExtra("sport", 8092);
+        if (yuvPort < 1024 || yuvPort > 65535) yuvPort = 8092;
+        yuvCamId = intent.getStringExtra("camera");
+        if (yuvCamId == null) yuvCamId = "0";
+
+        // Satu kamera satu pemegang.
+        if ((isRecording || isAttemptInFlight) && !yuvCamId.equals(recCameraId)) {
+            StatusFile.write(context, "", "Kamera id " + recCameraId
+                    + " sedang dipakai merekam. samakan kamera (-n -c " + recCameraId
+                    + ") atau quit dulu.");
+            return;
+        }
+        if (streamOn && !yuvCamId.equals(streamCamId)) {
+            StatusFile.write(context, "", "JPEG stream jalan di kamera id " + streamCamId
+                    + ". samakan kamera (-n -c " + streamCamId + ") atau matikan stream (-S) dulu.");
+            return;
+        }
+
+        // Ukuran YUV_420_888 yang benar-benar didukung kamera.
+        Size resolved = resolveSize(context, yuvCamId, yuvW, yuvH, ImageFormat.YUV_420_888);
+        if (resolved != null) {
+            yuvW = resolved.getWidth();
+            yuvH = resolved.getHeight();
+        }
+
+        try {
+            stopYuvPipe();
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+            if (yuvPipe == null) yuvPipe = new RawYuvPipe();
+            yuvPipe.setTargetFps(yuvFps);
+            yuvPipe.start(yuvPort, yuvW, yuvH, bgHandler());
+        } catch (Exception e) {
+            Log.e(TAG, "yuv pipe start gagal", e);
+            StatusFile.write(context, "", "Gagal menyalakan pipa Raw YUV: " + e.getMessage());
+            return;
+        }
+        yuvOn = true;
+        sessionGen++;
+        final long myGen = sessionGen;
+        isAttemptInFlight = true;
+        if (cameraDevice != null) {
+            buildSession(myGen, nextAttempt());
+        } else {
+            openRetryCount = 0;
+            attemptOpenCamera(context, activeCameraId(), myGen);
+        }
+        startWatchdog();
+        StatusFile.write(context, "Raw YUV jalan: 127.0.0.1:" + yuvPort
+                + " (" + yuvW + "x" + yuvH + " @" + yuvFps + "fps NV12)", null);
+        goForeground(statusLine());
+    }
+
     // ---------------- RESOLUSI & FPS (pemetaan ke kamera) ----------------
 
     /**
@@ -378,13 +483,21 @@ public class CamVideoService extends Service {
      * kembalikan ukuran terdekat (jarak area + rasio).
      */
     private Size resolveStreamSize(Context context, String cameraId, int reqW, int reqH) {
+        return resolveSize(context, cameraId, reqW, reqH, ImageFormat.JPEG);
+    }
+
+    /**
+     * Sama seperti resolveStreamSize, tetapi bisa memilih format keluaran
+     * (JPEG untuk stream lama, YUV_420_888 untuk Raw YUV baru).
+     */
+    private Size resolveSize(Context context, String cameraId, int reqW, int reqH, int format) {
         try {
             CameraManager manager = (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
             CameraCharacteristics c = manager.getCameraCharacteristics(cameraId);
             android.hardware.camera2.params.StreamConfigurationMap map =
                     c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) return null;
-            Size[] sizes = map.getOutputSizes(ImageFormat.JPEG);
+            Size[] sizes = map.getOutputSizes(format);
             if (sizes == null || sizes.length == 0) return null;
 
             double reqRatio = (double) reqW / reqH;
@@ -482,11 +595,13 @@ public class CamVideoService extends Service {
     }
 
     private void watchdogTick() {
-        if (!streamOn || pipe == null || !pipe.isRunning()) {
+        boolean anyPipe = (streamOn && pipe != null)
+                || (yuvOn && yuvPipe != null);
+        if (!anyPipe) {
             stopWatchdog();
             return;
         }
-        int id = pipe.getFrameId();
+        long id = watchdogFrameKey();
         long now = SystemClock.elapsedRealtime();
         if (id != lastWatchdogFrameId) {
             lastWatchdogFrameId = id;
@@ -496,7 +611,7 @@ public class CamVideoService extends Service {
             lastWatchdogChangeElapsed = now;
             watchdogRebuilds++;
             if (watchdogRebuilds <= 2) {
-                Log.i(TAG, "watchdog: stream macet (frame id " + id + "), bangun ulang sesi ("
+                Log.i(TAG, "watchdog: stream macet (frame key " + id + "), bangun ulang sesi ("
                         + watchdogRebuilds + ")");
                 isAttemptInFlight = true;
                 sessionGen++;
@@ -510,27 +625,61 @@ public class CamVideoService extends Service {
                 isAttemptInFlight = true;
                 openRetryCount = 0;
                 sessionGen++;
-                attemptOpenCamera(getApplicationContext(), streamCameraId(), sessionGen);
+                attemptOpenCamera(getApplicationContext(), activeCameraId(), sessionGen);
             }
         }
         bgHandler().postDelayed(this::watchdogTick, WATCHDOG_PERIOD_MS);
+    }
+
+    /** Gabungan id frame dari pipa yang aktif; berubah bila ada frame baru. */
+    private long watchdogFrameKey() {
+        long k = 0;
+        if (streamOn && pipe != null) k = k * 1000003L + pipe.getFrameId();
+        if (yuvOn && yuvPipe != null) k = k * 1000003L + yuvPipe.getFrameId();
+        return k;
     }
 
     private String streamCameraId() {
         return (wantRecord ? recCameraId : streamCamId);
     }
 
+    /** Kamera yang dipakai sesi sekarang: utamakan rekam, lalu JPEG, lalu YUV. */
+    private String activeCameraId() {
+        if (wantRecord) return recCameraId;
+        if (streamOn) return streamCamId;
+        return yuvCamId;
+    }
+
     private void wantStreamOff() {
         streamOn = false;
-        stopWatchdog();
         stopPipe();
         stopHttpAudio();
+        maybeStopWatchdog();
+    }
+
+    private void wantYuvOff() {
+        yuvOn = false;
+        stopYuvPipe();
+        maybeStopWatchdog();
+    }
+
+    private void maybeStopWatchdog() {
+        if (!streamOn && !yuvOn) stopWatchdog();
     }
 
     private void stopPipe() {
         if (pipe != null) {
             try {
                 pipe.stop();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void stopYuvPipe() {
+        if (yuvPipe != null) {
+            try {
+                yuvPipe.stop();
             } catch (Exception ignored) {
             }
         }
@@ -753,6 +902,7 @@ public class CamVideoService extends Service {
         final List<Surface> surfaces = new ArrayList<>();
         if (wantRecord && recorderSurface != null) surfaces.add(recorderSurface);
         if (streamOn && pipe != null && pipe.surface() != null) surfaces.add(pipe.surface());
+        if (yuvOn && yuvPipe != null && yuvPipe.surface() != null) surfaces.add(yuvPipe.surface());
         if (surfaces.isEmpty()) return;
         try {
             if (captureSession != null) {
@@ -776,20 +926,22 @@ public class CamVideoService extends Service {
                     req.set(CaptureRequest.CONTROL_AF_MODE,
                             CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
                     req.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
-                    // Frame JPEG stream ikut tegak mengikuti posisi HP.
+                    // Frame (JPEG stream / Raw YUV / rekaman) tegak mengikuti posisi HP.
                     req.set(CaptureRequest.JPEG_ORIENTATION,
-                            orientationHint(getApplicationContext(),
-                                    wantRecord ? recCameraId : streamCameraId()));
-                    // Kualitas JPEG + range fps AE: JPEG lebih ringan dan
-                    // kamera tidak menjatuhkan fps di kondisi minim cahaya.
+                            orientationHint(getApplicationContext(), activeCameraId()));
+                    // Kualitas JPEG hanya relevan untuk jalur JPEG.
                     if (streamOn) {
                         req.set(CaptureRequest.JPEG_QUALITY, (byte) streamQuality);
+                    }
+                    // Range fps AE mengikuti target tertinggi dari jalur aktif,
+                    // supaya kamera tidak mengubah fps dinamis (judder).
+                    if (streamOn || yuvOn) {
+                        int targetFps = Math.max(streamOn ? streamFps : 0, yuvOn ? yuvFps : 0);
                         try {
                             CameraManager cm = (CameraManager) getApplicationContext()
                                     .getSystemService(Context.CAMERA_SERVICE);
-                            CameraCharacteristics ch = cm.getCameraCharacteristics(
-                                    wantRecord ? recCameraId : streamCameraId());
-                            Range<Integer> fpsRange = chooseAeFpsRange(ch, streamFps);
+                            CameraCharacteristics ch = cm.getCameraCharacteristics(activeCameraId());
+                            Range<Integer> fpsRange = chooseAeFpsRange(ch, targetFps);
                             if (fpsRange != null) {
                                 req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
                             }
@@ -839,7 +991,7 @@ public class CamVideoService extends Service {
     /** Setelah mode berubah: bangun ulang sesi, atau lepas kamera bila menganggur. */
     private void rebuildOrRelease() {
         if (cameraDevice == null) return;
-        if (!wantRecord && !streamOn) {
+        if (!wantRecord && !streamOn && !yuvOn) {
             releaseCameraIfIdle();
             return;
         }
@@ -848,7 +1000,7 @@ public class CamVideoService extends Service {
     }
 
     private void releaseCameraIfIdle() {
-        if (isRecording || wantRecord || streamOn) return;
+        if (isRecording || wantRecord || streamOn || yuvOn) return;
         if (captureSession != null) {
             try { captureSession.close(); } catch (RuntimeException ignored) {}
             captureSession = null;
@@ -922,7 +1074,7 @@ public class CamVideoService extends Service {
             }
             captureSession = null;
         }
-        if (cameraDevice != null && !streamOn && !wantRecord) {
+        if (cameraDevice != null && !streamOn && !yuvOn && !wantRecord) {
             try {
                 cameraDevice.close();
             } catch (RuntimeException ignored) {

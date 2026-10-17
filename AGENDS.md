@@ -4,14 +4,15 @@ Dokumen status dan konteks proyek TCV Camera: aplikasi pendamping Android untuk
 merekam kamera HP dari Termux, mengalirkan frame ke Python, dan menyediakan
 sumber video/audio lokal untuk OBS Studio di HP yang sama.
 
-Versi terakhir di repo: **0.6.1 / versionCode 16**.
+Versi terakhir di repo: **0.7.0 / versionCode 17**.
 
 ## Tujuan proyek
 
 1. Rekam video kamera HP langsung dari Termux tanpa mengubah Termux/Termux:API.
 2. Sediakan frame live ke Python melalui TCP localhost.
 3. Sediakan video MJPEG dan audio WAV live ke OBS melalui HTTP localhost.
-4. Tetap tanpa library Android eksternal dan tanpa root.
+4. Sediakan video **Raw YUV (NV12)** mentah ke plugin OBS native (paling ringan).
+5. Tetap tanpa library Android eksternal dan tanpa root.
 
 ## Kondisi penting perangkat
 
@@ -43,6 +44,18 @@ Versi terakhir di repo: **0.6.1 / versionCode 16**.
     dipakai status dan watchdog.
   - `CamVideoService` memasang watchdog: bila frame berhenti bertambah, sesi
     dibangun ulang; bila tetap macet, kamera dibuka ulang.
+- `RawYuvPipe.java`
+  - ImageReader `YUV_420_888` mengambil frame langsung dari kamera (tanpa
+    encode JPEG sama sekali — jauh lebih ringan CPU).
+  - Melayani plugin OBS via TCP `127.0.0.1:8092`.
+  - Protokol per frame: 4 x uint32 big-endian (width, height, format, size),
+    lalu payload NV12 padat (bidang Y lalu UV selang-seling).
+  - `packNv12()` menyesuaikan rowStride/pixelStride: Y selalu pixelStride 1;
+    U/V pixelStride 2 (semi-planar) dianggap NV12 apa adanya; pixelStride 1
+    (planar) dijalin manual.
+  - Buffer NV12 dipakai ulang + disalin per klien di bawah lock; lewati frame
+    dengan `acquireLatestImage` + throttle `minIntervalMs`.
+  - Menyimpan fps nyata, jumlah penonton, dan id frame (untuk watchdog).
 - `MjpegHttpServer.java`
   - Server HTTP mini di `127.0.0.1:8091`.
   - `/` untuk halaman uji browser.
@@ -73,24 +86,37 @@ camvideo -q
 camvideo -s
 camvideo -s -r hd
 camvideo -S
+camvideo -n
+camvideo -n -r hd
+camvideo -N
 camvideo -C
 ```
 
 Catatan opsi: fps rekaman memakai `-p <fps>` (dulu `-r`). Opsi `-r <preset>`
-khusus stream, memilih rasio: `4:3` (default), `1:1`, `16:9`/`hd`, `9:16`,
-`fhd`. Preset dipetakan ke ukuran JPEG yang benar-benar didukung kamera.
+khusus siaran, memilih rasio: `4:3` (default), `1:1`, `16:9`/`hd`, `9:16`,
+`fhd`. Preset dipetakan ke ukuran yang benar-benar didukung kamera.
+Fitur lama "rekam tanpa audio" (`-n` lama / `--ez audio false`) sudah dihapus
+karena tidak dipakai.
 
-Arti mode stream:
+Arti mode siaran:
 
 ```bash
-camvideo -s
+camvideo -s    # JPEG  (untuk Python/browser)
+camvideo -n    # Raw YUV (untuk plugin OBS)
 ```
 
-Perintah itu menyalakan (default 640x480 @ 24 fps, JPEG quality 80):
+`camvideo -s` menyalakan (default 640x480 @ 24 fps, JPEG quality 80):
 
 - TCP Python: `127.0.0.1:8090`
 - Video OBS: `http://127.0.0.1:8091/mjpeg`
 - Audio OBS: `http://127.0.0.1:8091/audio.wav`
+
+`camvideo -n` menyalakan (default 640x480 @ 24 fps, NV12 mentah):
+
+- TCP plugin OBS: `127.0.0.1:8092`
+
+Jalur JPEG dan Raw YUV bisa jalan bersama, tetapi berarti kamera mengeluarkan
+dua aliran sekaligus; di HP kelas menengah bisa menurunkan fps.
 
 ## Integrasi OBS
 
@@ -154,6 +180,7 @@ Gunakan sumber **Media Source**, bukan V4L2:
 - `app/src/main/java/com/tcv/CamVideoReceiver.java`
 - `app/src/main/java/com/tcv/CamVideoService.java`
 - `app/src/main/java/com/tcv/FramePipe.java`
+- `app/src/main/java/com/tcv/RawYuvPipe.java`
 - `app/src/main/java/com/tcv/MjpegHttpServer.java`
 - `app/src/main/java/com/tcv/AudioStreamer.java`
 - `app/src/main/java/com/tcv/StatusFile.java`
@@ -163,12 +190,43 @@ Gunakan sumber **Media Source**, bukan V4L2:
 - `.github/workflows/build.yml`
 - `README.md`
 
+## Catatan: integrasi OBS via plugin custom (Opsi B, 2026-10-17)
+
+- Opsi A (Media Source OBS baca MJPEG HTTP 8091) = performa buruk.
+- Opsi B (SELESAI): plugin OBS native `tcv-capture` baca langsung dari TCP,
+  render tanpa HTTP/FFmpeg. Plugin di `~/diskusi/tcv-capture/`.
+  Awalnya mode JPEG (TCP 8090) — sudah teruji ujung-ke-ujung dan
+  **dikonfirmasi tampil di OBS** (lihat `~/diskusi/obs-studio/agend.md` §15).
+- Bug tutup OBS ditemukan & diperbaiki: event stop bertipe `OS_EVENT_TYPE_AUTO`
+  → sinyal dikonsumsi di loop dalam → loop luar reconnect terus →
+  `pthread_join` menggantung → OBS tidak mau tutup. Fix: `OS_EVENT_TYPE_MANUAL`
+  + `SO_RCVTIMEO` 300 ms + `shutdown()` di `tcv_destroy`/`tcv_update`.
+  Diverifikasi: fase 1 aman.
+- Opsi B2 (SELESAI di v0.7.0): app menambah `RawYuvPipe.java` yang mengeluarkan
+  YUV mentah (NV12) di `127.0.0.1:8092` langsung dari `ImageReader`
+  `YUV_420_888` — tanpa encode, hemat CPU. Plugin diubah jadi **Raw YUV saja**
+  (hapus jalur JPEG + libjpeg), dengan properti dropdown **"Perangkat TCV"**
+  yang mengarah ke `127.0.0.1:8092`.
+- Jalur JPEG tetap ada di app untuk OpenCV/Python (TCP 8090 + HTTP 8091);
+  plugin OBS tidak lagi memakainya.
+- Karena plugin kini hanya menerima YUV, sumber video OBS lama yang tersimpan
+  dengan format JPEG harus di-reset (buka sumber → pilih ulang "Perangkat TCV")
+  setelah APK v0.7.0 terpasang.
+
 ## Langkah berikutnya
 
-1. Instal APK v0.6.0.
+1. Build & instal APK v0.7.0 (push ke `main` → Actions → artifact `tcv-app`).
 2. Aktifkan layanan dari aplikasi.
-3. Jalankan `camvideo -s` lalu `camvideo -i` untuk melihat fps nyata.
-4. Uji FPS di Python (`tmp/main.py`) dan coba `camvideo -s -r hd`.
-5. Uji video dan audio OBS bersamaan.
-6. Ukur jeda nyata antara perubahan gambar dan suara.
-7. Bila jeda masih besar, selidiki buffering Media Source OBS sebelum mengubah kode lagi.
+3. Jalankan `camvideo -n` lalu `camvideo -i` untuk melihat fps nyata Raw YUV.
+4. Di OBS, sumber "TCV Camera Capture" pilih "Perangkat TCV"
+   (127.0.0.1:8092) — pastikan gambar tampil dan FPS stabil.
+5. Ukur fps nyata saat YUV 640x480; coba `camvideo -n -r 16:9` / `fhd` bila berat.
+6. **Rotasi YUV**: frame mentah tidak membawa info orientasi, jadi di OBS
+   gambar kemungkinan miring 90° (sensor kamera). Untuk sementara betulkan
+   dengan transform sumber di OBS (Klik kanan → Transform → Rotate 90°).
+   Bila mengganggu, opsi berikutnya: kirim sudut rotasi di header (byte sisa
+   `format`) lalu plugin memutarnya, atau putar di app.
+7. Uji jalan bersama `camvideo -n` + `camvideo -s` (video YUV + audio JPEG
+   path) dan catat penurunan fps bila ada.
+8. Bila kualitas kurang bagus, selidiki matrix warna NV12 di plugin
+   (`full_range`, `VIDEO_CS_DEFAULT`).

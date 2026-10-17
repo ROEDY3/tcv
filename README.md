@@ -45,16 +45,31 @@ camvideo -d                 # rekam dengan default
 camvideo -d -l 5 -f a.mp4   # rekam 5 detik ke Movies/a.mp4
 camvideo -d -p 30           # rekam pada 30 fps
 camvideo -c 1 -d            # pakai kamera id 1
-camvideo -n -d              # tanpa audio
 camvideo -i                 # status rekaman
 camvideo -q                 # berhenti merekam (layanan tetap siaga)
-camvideo -s                 # stream untuk OBS/Python (640x480 @ 24 fps)
-camvideo -s -r hd           # stream rasio 16:9 (preset: 4:3, 1:1, 16:9, 9:16, fhd)
-camvideo -S                 # matikan stream
+camvideo -s                 # stream JPEG (640x480 @ 24 fps) untuk Python/browser
+camvideo -s -r hd           # stream JPEG rasio 16:9 (preset: 4:3, 1:1, 16:9, 9:16, fhd)
+camvideo -S                 # matikan stream JPEG
+camvideo -n                 # stream Raw YUV (640x480 @ 24 fps) untuk plugin OBS
+camvideo -n -r hd           # stream Raw YUV rasio 16:9
+camvideo -N                 # matikan stream Raw YUV
 ```
 
 Opsi fps rekaman memakai `-p <fps>` (sebelumnya `-r`). Opsi `-r <preset>`
-sekarang khusus stream untuk memilih rasio.
+sekarang khusus siaran untuk memilih rasio.
+
+Dua jalur siaran langsung:
+
+- **JPEG** (`-s`): server TCP `127.0.0.1:8090` + HTTP MJPEG `127.0.0.1:8091`
+  (untuk OpenCV/Python/browser). Ada audio mic di `/audio.wav`.
+- **Raw YUV** (`-n`): server TCP `127.0.0.1:8092` mengirim NV12 mentah langsung
+  dari kamera — tanpa encode, paling ringan, dipakai plugin OBS
+  "TCV Camera Capture". Tidak ada audio di jalur ini.
+
+Kalau perlu video dan audio di OBS, tambahkan audio lewat Media Source
+`http://127.0.0.1:8091/audio.wav` (butuh `-s` jalan). Catatan: menjalankan
+`-n` dan `-s` bersama berarti kamera mengeluarkan dua aliran sekaligus —
+di HP kelas menengah bisa menurunkan fps, jadi uji dulu.
 
 ## Build sendiri
 

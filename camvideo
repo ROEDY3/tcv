@@ -7,6 +7,10 @@
 #   camvideo -i
 #   camvideo -q
 #
+# Ada dua jalur siaran langsung:
+#   -s  JPEG  : http://127.0.0.1:8091/mjpeg (untuk browser / OpenCV)
+#   -n  YUV   : 127.0.0.1:8092 (mentah NV12, untuk plugin OBS "TCV Camera Capture")
+#
 # Syarat: aplikasi com.tcv terinstal + izin kamera, mikrofon, penyimpanan
 # sudah diberikan lewat aplikasinya (buka sekali dari launcher).
 
@@ -27,10 +31,11 @@ show_usage () {
     echo "-l <limit>   Start recording w/ specified duration limit (in seconds, unlimited for 0)"
     echo "-b <bitrate> Start recording w/ specified video bitrate (in kbps)"
     echo "-p <fps>     Start recording w/ specified frame rate"
-    echo "-n           Start recording w/o audio"
-    echo "-s           Start stream (Python TCP + OBS http://127.0.0.1:8091/mjpeg + mic /audio.wav; boleh + -c <id> + -r <preset>)"
-    echo "-r <preset>  Stream resolution preset (only with -s): 4:3|1:1|16:9|hd|9:16|fhd (default 4:3)"
-    echo "-S           Stop stream"
+    echo "-s           Start JPEG stream (http://127.0.0.1:8091/mjpeg + mic /audio.wav; boleh + -c <id> + -r <preset>)"
+    echo "-S           Stop JPEG stream"
+    echo "-n           Start Raw YUV stream (127.0.0.1:8092, untuk OBS; boleh + -c <id> + -r <preset>)"
+    echo "-N           Stop Raw YUV stream"
+    echo "-r <preset>  Stream resolution preset (with -s/-n): 4:3|1:1|16:9|hd|9:16|fhd (default 4:3)"
     echo "-C           List cameras (id depan/belakang)"
     echo "-i           Get info about current recording"
     echo "-q           Quits recording"
@@ -63,7 +68,7 @@ call_api () {
 
 add_stream_ratio () {
     # Petakan preset rasio ke ukuran yang diminta; aplikasi menyesuaikan
-    # ke ukuran JPEG yang benar-benar didukung kamera.
+    # ke ukuran yang benar-benar didukung kamera.
     case "$1" in
         4:3)      add_params --ei sw 640  --ei sh 480 ;;
         1:1)      add_params --ei sw 640  --ei sh 640 ;;
@@ -88,7 +93,7 @@ show_status () {
     fi
 }
 
-while getopts h,f:,c:,l:,b:,p:,r:,n,d,i,q,s,S,C option
+while getopts h,f:,c:,l:,b:,p:,r:,n,N,d,i,q,s,S,C option
 do
     case "$option" in
         h) sole "$@"
@@ -117,9 +122,12 @@ do
         r) ratio="$OPTARG"
            ratioopt=yes
            ;;
-        n) record=yes
-           recopt=yes
-           add_params --ez audio false
+        n) yuv=yes
+           add_params -a yuv_start
+           ;;
+        N) yuvstop=yes
+           sole "$@"
+           add_params -a yuv_stop
            ;;
         d) record=yes
            ;;
@@ -147,14 +155,19 @@ do
     esac
 done
 
-if [ -v stream ]; then
-    # Mode stream: hanya boleh ditemani -c (pilih kamera).
-    if [ -v rec ] || [ -v info ] || [ -v quit ] || [ -v sstop ] || [ -v cams ]; then
-        echo "ERROR: -s tidak bisa digabung perintah lain (-d/-i/-q/-S/-C)!"
+if [ -v stream ] && [ -v yuv ]; then
+    echo "ERROR: -s (JPEG) dan -n (Raw YUV) tidak bisa digabung!"
+    usage_error
+fi
+
+if [ -v stream ] || [ -v yuv ]; then
+    # Mode siaran: hanya boleh ditemani -c (pilih kamera) + -r (preset).
+    if [ -v record ] || [ -v info ] || [ -v quit ] || [ -v sstop ] || [ -v yuvstop ] || [ -v cams ]; then
+        echo "ERROR: -s/-n tidak bisa digabung perintah lain (-d/-i/-q/-S/-N/-C)!"
         usage_error
     fi
     if [ -v recopt ]; then
-        echo "ERROR: -f/-l/-b/-p/-n hanya untuk merekam, bukan stream!"
+        echo "ERROR: -f/-l/-b/-p hanya untuk merekam, bukan siaran!"
         usage_error
     fi
     if [ -v ratio ]; then
@@ -162,14 +175,15 @@ if [ -v stream ]; then
     fi
 else
     if [ -v ratio ]; then
-        echo "ERROR: -r (preset rasio) hanya untuk stream, pakai bersama -s!"
+        echo "ERROR: -r (preset rasio) hanya untuk siaran, pakai bersama -s atau -n!"
         usage_error
     fi
     ncmd=0
-    [ -v rec ] && ncmd=$((ncmd + 1))
+    [ -v record ] && ncmd=$((ncmd + 1))
     [ -v info ] && ncmd=$((ncmd + 1))
     [ -v quit ] && ncmd=$((ncmd + 1))
     [ -v sstop ] && ncmd=$((ncmd + 1))
+    [ -v yuvstop ] && ncmd=$((ncmd + 1))
     [ -v cams ] && ncmd=$((ncmd + 1))
     if [ "$ncmd" -gt 1 ]; then
         echo "ERROR: satu perintah saja dalam sekali jalan!"
