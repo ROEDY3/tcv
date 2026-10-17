@@ -213,6 +213,32 @@ Gunakan sumber **Media Source**, bukan V4L2:
   dengan format JPEG harus di-reset (buka sumber → pilih ulang "Perangkat TCV")
   setelah APK v0.7.0 terpasang.
 
+## Keamanan server lokal
+
+Semua server bind ke `127.0.0.1` saja
+(`InetAddress.getByName("127.0.0.1")`):
+`FramePipe` (8090), `MjpegHttpServer` (8091), `RawYuvPipe` (8092).
+Artinya tidak bisa dijangkau dari HP lain, Wi-Fi, maupun internet — gambar
+tidak pernah keluar dari HP.
+
+Batas ancaman yang tersisa (hanya dari DALAM HP yang sama):
+
+- App lain yang punya izin INTERNET bisa konek selama siaran hidup dan membaca
+  frame tanpa izin CAMERA. Perlu app jahat sudah terpasang lebih dulu.
+- HTTP 8091 tidak memvalidasi header `Host` → rentan "DNS rebinding" lewat
+  browser. Port 8090/8092 TCP mentah tidak bisa disentuh browser.
+- Server hanya hidup saat `-s`/`-n`; setelah `-S`/`-N` (atau layanan mati)
+  tidak ada socket yang bind.
+
+Rencana penguatan (BELUM dikerjakan):
+
+- **Token rahasia app↔plugin** (disarankan): permintaan pertama harus memuat
+  token; tanpa token koneksi ditutup. Menutup celah app lain & situs web.
+  Perlu ubah app + plugin + `camvideo` + rebuild APK.
+- Validasi `Host: 127.0.0.1` di `MjpegHttpServer` (kecil, cegah DNS rebinding).
+- Opsi paling kuat: AF_UNIX + `SO_PEERCRED` (batasi ke UID Termux/OBS), tetapi
+  jalur Python/proot perlu dicek ulang.
+
 ## Langkah berikutnya
 
 1. Build & instal APK v0.7.0 (push ke `main` → Actions → artifact `tcv-app`).
@@ -230,3 +256,6 @@ Gunakan sumber **Media Source**, bukan V4L2:
    path) dan catat penurunan fps bila ada.
 8. Bila kualitas kurang bagus, selidiki matrix warna NV12 di plugin
    (`full_range`, `VIDEO_CS_DEFAULT`).
+9. (Opsional, ditunda atas permintaan) Pengaman server: token app↔plugin +
+   validasi `Host` di 8091 — lihat bagian "Keamanan server lokal". Belum
+   dikerjakan.

@@ -71,6 +71,32 @@ Kalau perlu video dan audio di OBS, tambahkan audio lewat Media Source
 `-n` dan `-s` bersama berarti kamera mengeluarkan dua aliran sekaligus —
 di HP kelas menengah bisa menurunkan fps, jadi uji dulu.
 
+## Keamanan server kamera
+
+Server TCV hanya mendengarkan di `127.0.0.1` (loopback), jadi:
+
+- Tidak bisa diakses dari HP lain, Wi-Fi, maupun internet. Gambar tidak pernah
+  keluar dari HP.
+- Hanya app/shell **di HP yang sama** yang bisa menghubunginya.
+
+Yang perlu diwaspadai:
+
+- App lain di HP yang punya izin internet bisa konek ke port 8090/8091/8092
+  **selama siaran hidup** (8090/8092 TCP mentah, 8091 HTTP). Syaratnya app
+  nakal itu sudah terpasang di HP lebih dulu.
+- Port HTTP 8091 bisa disentuh browser; ada serangan "DNS rebinding" dari situs
+  web. Server belum memeriksa header `Host`.
+- Server **hanya hidup saat `-s`/`-n`**. Setelah `-S`/`-N` atau layanan
+  dimatikan, tidak ada yang mendengarkan sama sekali.
+
+Saran praktis:
+
+- Hentikan siaran kalau tidak dipakai.
+- Berhati-hati memasang app dari luar sumber resmi.
+
+Rencana penguatan (belum dikerjakan): kunci rahasia (token) antara app dan
+plugin, serta pemeriksaan header `Host` di port 8091.
+
 ## Build sendiri
 
 Push ke branch `main` → workflow **Build** jalan otomatis di GitHub Actions →
